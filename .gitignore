@@ -5,4 +5,5 @@
 !/Koat.fs
 !/Program.fs
 !/StackSim.fs
+!/CilFrontend.fsproj
 !.gitignore
