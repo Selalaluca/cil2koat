@@ -4,6 +4,7 @@ open System.Collections.Generic
 open Mono.Cecil
 open CilFrontend.Cfg
 open CilFrontend.StackSim
+open CilFrontend.Koat
 
 let private successors terminator =
     match terminator with
@@ -65,7 +66,7 @@ let private simulateCfg method blocks =
 [<EntryPoint>]
 let main argv =
     if argv.Length < 2 then
-        printfn "使い方: CilFrontend <アセンブリのパス> <メソッド名>"
+        printfn "使い方: CilFrontend <アセンブリのパス> <メソッド名> [出力.koat]"
         1
     else
         let assemblyPath = argv.[0]
@@ -139,5 +140,9 @@ let main argv =
                     | _ -> ()
 
                 printfn ""
+
+            if argv.Length >= 3 then
+                writeMethod method blocks argv.[2]
+                printfn "KoATファイルを書き出しました: %s" argv.[2]
 
             0

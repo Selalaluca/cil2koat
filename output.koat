@@ -1,0 +1,9 @@
+(GOAL COMPLEXITY)
+(STARTTERM (FUNCTIONSYMBOLS block_0000))
+(VAR x)
+(RULES
+  block_0000(x) -> block_0005(x)
+  block_0003(x) -> block_0005(x)
+  block_0005(x) -> block_0003(x) [x > 0]
+  block_0005(x) -> block_000D(x) [x <= 0]
+)
