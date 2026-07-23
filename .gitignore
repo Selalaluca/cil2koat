@@ -1,7 +1,8 @@
-!*/
+/*
+/.**
 
 !/Cfg.fs
 !/Koat.fs
 !/Program.fs
 !/StackSim.fs
-!/.gitignore
+!.gitignore
