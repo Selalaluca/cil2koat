@@ -1,67 +1,10 @@
 module CilFrontend.Program
 
-open System.Collections.Generic
 open Mono.Cecil
 open CilFrontend.Cfg
 open CilFrontend.StackSim
+open CilFrontend.Analysis
 open CilFrontend.Koat
-
-let private successors terminator =
-    match terminator with
-    | Unconditional target -> [ target ]
-    | Conditional (trueBlock, falseBlock) -> [ trueBlock; falseBlock ]
-    | Switch (targets, defaultBlock) -> defaultBlock :: targets
-    | FallsThrough next -> [ next ]
-    | MethodReturn -> []
-
-/// 合流元ごとに異なる式が来るスタックスロットを、ブロック入口の抽象変数にする。
-let private mergeStacks targetLabel oldStack newStack =
-    if List.length oldStack <> List.length newStack then
-        failwithf
-            "ブロック %s の入口で評価スタックの高さが一致しません: %d と %d"
-            targetLabel
-            (List.length oldStack)
-            (List.length newStack)
-
-    List.map3
-        (fun index oldValue newValue ->
-            if oldValue = newValue then oldValue
-            else Var(sprintf "stack_%s_%d" targetLabel index))
-        [ 0 .. List.length oldStack - 1 ]
-        oldStack
-        newStack
-
-/// CFG上で入口スタックを伝播し、到達可能な各ブロックをシミュレーションする。
-let private simulateCfg method blocks =
-    let entryStacks = Dictionary<string, Expr list>()
-    let results = Dictionary<string, SimulationResult>()
-    let worklist = Queue<BasicBlock>()
-
-    let firstBlock = List.head blocks
-    entryStacks.[labelOf firstBlock] <- []
-    worklist.Enqueue firstBlock
-
-    while worklist.Count > 0 do
-        let block = worklist.Dequeue()
-        let blockLabel = labelOf block
-        let initialStack = entryStacks.[blockLabel]
-        let result = simulateBlock method initialStack block.Instructions
-        results.[blockLabel] <- result
-
-        let terminator = classifyTerminator block blocks
-        for target in successors terminator do
-            let targetLabel = labelOf target
-            match entryStacks.TryGetValue targetLabel with
-            | false, _ ->
-                entryStacks.[targetLabel] <- result.ExitStack
-                worklist.Enqueue target
-            | true, oldStack ->
-                let merged = mergeStacks targetLabel oldStack result.ExitStack
-                if merged <> oldStack then
-                    entryStacks.[targetLabel] <- merged
-                    worklist.Enqueue target
-
-    results
 
 [<EntryPoint>]
 let main argv =
@@ -96,7 +39,7 @@ let main argv =
             printfn ""
 
             let blocks = splitIntoBasicBlocks method.Body.Instructions
-            let results = simulateCfg method blocks
+            let analysis = analyseCfg method blocks
 
             printfn "--- 基本ブロック分割結果 ---"
             for block in blocks do
@@ -108,10 +51,11 @@ let main argv =
                 let terminator = classifyTerminator block blocks
                 printfn "    -> 分岐先: %s" (describeTerminator terminator)
 
-                match results.TryGetValue blockLabel with
+                match analysis.ByLabel.TryGetValue blockLabel with
                 | false, _ ->
                     printfn "    -> 到達不能なブロック"
-                | true, simulation ->
+                | true, analysed ->
+                    let simulation = analysed.Simulation
                     if not simulation.Commands.IsEmpty then
                         printfn "    -> 変数化した代入文:"
                         for cmd in simulation.Commands do
@@ -142,7 +86,7 @@ let main argv =
                 printfn ""
 
             if argv.Length >= 3 then
-                writeMethod method blocks argv.[2]
+                writeAnalysis method analysis argv.[2]
                 printfn "KoATファイルを書き出しました: %s" argv.[2]
 
             0

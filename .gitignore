@@ -1,9 +1,12 @@
+
 /*
 /.**
 
 !/Cfg.fs
+!/StackSim.fs
+!/Analysis.fs
+!/TransitionIr.fs
 !/Koat.fs
 !/Program.fs
-!/StackSim.fs
 !/CilFrontend.fsproj
 !.gitignore

@@ -82,6 +82,18 @@ let simulateBlock
         let a = stack.Pop()
         BinOp(op, a, b)
 
+    let popUnsignedGreater () =
+        let b = stack.Pop()
+        let a = stack.Pop()
+
+        // C#コンパイラは整数の x != 0 を
+        //   ldarg x; ldc.i4.0; cgt.un
+        // として出力する。符号なし表現では非0値がすべて0より大きいため、
+        // この形は数学的整数上の x != 0 として正確に正規化できる。
+        match b with
+        | Const 0 -> BinOp("!=", a, b)
+        | _ -> BinOp(">u", a, b)
+
     for instr in instructions do
         match instr.OpCode.Code with
         | Code.Nop -> ()
@@ -141,7 +153,7 @@ let simulateBlock
         | Code.Rem
         | Code.Rem_Un -> pop2AndPush "%"
         | Code.Cgt -> pop2AndPush ">"
-        | Code.Cgt_Un -> pop2AndPush ">u"
+        | Code.Cgt_Un -> stack.Push(popUnsignedGreater ())
         | Code.Clt -> pop2AndPush "<"
         | Code.Clt_Un -> pop2AndPush "<u"
         | Code.Ceq -> pop2AndPush "=="
