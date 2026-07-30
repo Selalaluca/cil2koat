@@ -1,6 +1,6 @@
 # cil2koat
 
-.NETアセンブリ内のCILを解析し、[KoAT](https://github.com/aprove-developers/KoAT2-Releases)向けの整数遷移系（`.koat`）へ変換するF#製の試作フロントエンドです。
+.NETアセンブリ内のCILを解析し、[KoAT](https://github.com/aprove-developers/KoAT2-Releases)向けの整数遷移系（`.koat`）へ変換するF#製の試作プログラムです。
 
 現在は、1つのメソッド内にある整数引数・整数ローカルを中心に、CILの制御フロー、代入、分岐条件を整数遷移系へ変換します。安全に変換できない入力は近似せず、可能な限り命令位置と理由を示して処理を中止します。
 
@@ -30,13 +30,13 @@ KoAT入力ファイル
 ## ビルド
 
 ```powershell
-dotnet build CilFrontend.fsproj
+dotnet build
 ```
 
 ## 使い方
 
 ```powershell
-dotnet run --project CilFrontend.fsproj -- `
+dotnet run -- `
   <assembly.dllまたはassembly.exe> `
   <method-specifier> `
   [output.koat]
@@ -47,7 +47,7 @@ dotnet run --project CilFrontend.fsproj -- `
 メソッド名がアセンブリ全体で一意なら、名前だけで指定することが可能です。
 
 ```powershell
-dotnet run --project CilFrontend.fsproj -- `
+dotnet run -- `
   .\Target.dll `
   CountDown `
   .\CountDown.koat
@@ -62,11 +62,11 @@ instance:Namespace.Type::Method(System.Int32)
 ```
 
 ```powershell
-dotnet run --project CilFrontend.fsproj -- `
+dotnet run -- `
   .\Target.dll `
   "static:Example.Program::CountDown(System.Int32)" `
   .\CountDown.koat
-```
+r```
 
 単純名が曖昧な場合は1件を暗黙に選ばず、利用可能な厳密指定を表示して終了します。ネスト型内のメソッドも検索対象です。
 
