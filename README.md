@@ -36,10 +36,7 @@ dotnet build
 ## 使い方
 
 ```powershell
-dotnet run -- `
-  <assembly.dllまたはassembly.exe> `
-  <method-specifier> `
-  [output.koat]
+dotnet run -- <assembly.dllまたはassembly.exeのpath> <method-specifier> [output.koat]
 ```
 
 出力先を省略すると解析内容の表示だけを行います。出力先を指定すると、表示に加えてKoATファイルを書き出します。
@@ -47,10 +44,7 @@ dotnet run -- `
 メソッド名がアセンブリ全体で一意なら、名前だけで指定することが可能です。
 
 ```powershell
-dotnet run -- `
-  .\Target.dll `
-  CountDown `
-  .\CountDown.koat
+dotnet run -- Target.dll sampleFunc output.koat
 ```
 
 同名メソッドやオーバーロードがある場合は、型と引数型を含む厳密指定を使用してください。
@@ -62,11 +56,8 @@ instance:Namespace.Type::Method(System.Int32)
 ```
 
 ```powershell
-dotnet run -- `
-  .\Target.dll `
-  "static:Example.Program::CountDown(System.Int32)" `
-  .\CountDown.koat
-r```
+dotnet run -- Target.dll "static:Example.Program::sampleFunc(System.Int32)" output.koat
+```
 
 単純名が曖昧な場合は1件を暗黙に選ばず、利用可能な厳密指定を表示して終了します。ネスト型内のメソッドも検索対象です。
 
