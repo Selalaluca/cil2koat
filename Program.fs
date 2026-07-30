@@ -67,18 +67,18 @@ let main argv =
                         printfn
                             "         %s の場合(真): %s"
                             (labelOf trueBlock)
-                            (renderExpr guard)
+                            (renderBoolExpr guard)
                         printfn
                             "         %s の場合(偽): %s"
                             (labelOf falseBlock)
-                            (renderExpr (Not guard))
+                            (renderBoolExpr (BoolNot guard))
                     | Switch (targets, defaultBlock), _, Some value ->
                         printfn "    -> switch条件:"
                         for index, target in List.indexed targets do
                             printfn
                                 "         %s の場合: %s == %d"
                                 (labelOf target)
-                                (renderExpr value)
+                                (renderIntExpr value)
                                 index
                         printfn "         %s の場合: default" (labelOf defaultBlock)
                     | _ -> ()

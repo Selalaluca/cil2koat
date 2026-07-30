@@ -9,7 +9,7 @@ open CilFrontend.StackSim
 type AnalysedBlock = {
     Block: BasicBlock
     Terminator: Terminator
-    EntryStack: Expr list
+    EntryStack: StackValue list
     Simulation: SimulationResult
 }
 
@@ -42,7 +42,18 @@ let private mergeStacks targetLabel oldStack newStack =
     List.map3
         (fun index oldValue newValue ->
             if oldValue = newValue then oldValue
-            else Var(stackVariableName targetLabel index))
+            else
+                match oldValue, newValue with
+                | IntValue _, IntValue _ ->
+                    IntValue(Var(stackVariableName targetLabel index))
+                | BoolValue _, BoolValue _ ->
+                    failwithf
+                        "ブロック %s の入口で異なるBooleanスタック値を合流できません。"
+                        targetLabel
+                | _ ->
+                    failwithf
+                        "ブロック %s の入口で整数値とBoolean値を合流できません。"
+                        targetLabel)
         [ 0 .. List.length oldStack - 1 ]
         oldStack
         newStack
@@ -52,7 +63,7 @@ let analyseCfg (method: MethodDefinition) (blocks: BasicBlock list) =
     if blocks.IsEmpty then
         failwith "命令を持たないメソッドは解析できません。"
 
-    let entryStacks = Dictionary<string, Expr list>()
+    let entryStacks = Dictionary<string, StackValue list>()
     let results = Dictionary<string, AnalysedBlock>()
     let worklist = Queue<BasicBlock>()
     let firstBlock = List.head blocks

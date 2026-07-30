@@ -8,5 +8,11 @@
 !/TransitionIr.fs
 !/Koat.fs
 !/Program.fs
+!/Sample.cs
 !/CilFrontend.fsproj
+!/tests/
+!/tests/CilFrontend.Tests.fsproj
+!/tests/Program.fs
+!/tests/golden/
+!/tests/golden/*.koat
 !.gitignore

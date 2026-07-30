@@ -16,8 +16,6 @@ let rec private renderArithmetic expression =
         sprintf "(%s %s %s)" (renderArithmetic left) op (renderArithmetic right)
     | BinOp (op, _, _) ->
         failwithf "KoATの多項式更新として出力できない演算です: %s" op
-    | Not _ ->
-        failwith "Boolean式をKoATの算術更新として出力することはできません。"
 
 let private renderComparison op left right =
     let koatOperator =
@@ -33,28 +31,25 @@ let private renderComparison op left right =
 /// KoATに論理和がないため、論理和と!=は複数規則へ展開する。
 let rec private expandGuard expression =
     match expression with
-    | BinOp ("||", left, right) -> expandGuard left @ expandGuard right
-    | BinOp ("!=", left, right) ->
+    | BoolOr (left, right) -> expandGuard left @ expandGuard right
+    | Compare ("!=", left, right) ->
         [ renderComparison "<" left right; renderComparison ">" left right ]
-    | BinOp (("==" | ">" | ">=" | "<" | "<=" | ">u" | ">=u" | "<u" | "<=u") as op, left, right) ->
+    | Compare (("==" | ">" | ">=" | "<" | "<=" | ">u" | ">=u" | "<u" | "<=u") as op, left, right) ->
         [ renderComparison op left right ]
-    | Var name -> [ sprintf "%s < 0" name; sprintf "%s > 0" name ]
-    | Const 0 -> []
-    | Const _ -> [ "" ]
-    | Not inner ->
+    | NonZero value ->
+        [ renderComparison "<" value (Const 0); renderComparison ">" value (Const 0) ]
+    | BoolNot inner ->
         match inner with
-        | BinOp (">", left, right) -> [ renderComparison "<=" left right ]
-        | BinOp (">=", left, right) -> [ renderComparison "<" left right ]
-        | BinOp ("<", left, right) -> [ renderComparison ">=" left right ]
-        | BinOp ("<=", left, right) -> [ renderComparison ">" left right ]
-        | BinOp ("==", left, right) ->
+        | Compare (">", left, right) -> [ renderComparison "<=" left right ]
+        | Compare (">=", left, right) -> [ renderComparison "<" left right ]
+        | Compare ("<", left, right) -> [ renderComparison ">=" left right ]
+        | Compare ("<=", left, right) -> [ renderComparison ">" left right ]
+        | Compare ("==", left, right) ->
             [ renderComparison "<" left right; renderComparison ">" left right ]
-        | BinOp ("!=", left, right) -> [ renderComparison "==" left right ]
-        | Var name -> [ sprintf "%s = 0" name ]
-        | Const 0 -> [ "" ]
-        | Const _ -> []
+        | Compare ("!=", left, right) -> [ renderComparison "==" left right ]
+        | NonZero value -> [ renderComparison "==" value (Const 0) ]
         | _ -> failwith "複合した否定ガードはまだKoAT形式へ変換できません。"
-    | _ -> failwithf "KoAT形式へ変換できないガードです: %s" (renderExpr expression)
+    | _ -> failwithf "KoAT形式へ変換できないガードです: %s" (renderBoolExpr expression)
 
 let private locationApplication label arguments =
     sprintf "%s(%s)" label (String.concat "," arguments)

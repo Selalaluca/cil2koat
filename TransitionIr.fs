@@ -11,8 +11,8 @@ open CilFrontend.Analysis
 type Transition = {
     Source: string
     Target: string
-    Updates: Map<string, Expr>
-    Guard: Expr option
+    Updates: Map<string, IntExpr>
+    Guard: BoolExpr option
 }
 
 type TransitionSystem = {
@@ -64,14 +64,20 @@ let private collectStackVariables (analysis: CfgAnalysis) =
             |> List.choose (fun (index, expression) ->
                 let expectedName = stackVariableName label index
                 match expression with
-                | Var name when name = expectedName -> Some name
+                | IntValue(Var name) when name = expectedName -> Some name
                 | _ -> None))
     |> List.distinct
 
 let private updatesFor (variables: string list) (commands: Command list) =
-    let latest = Dictionary<string, Expr>()
+    let latest = Dictionary<string, IntExpr>()
     for command in commands do
-        latest.[command.Target] <- command.Value
+        match command.Value with
+        | IntValue expression -> latest.[command.Target] <- expression
+        | BoolValue _ when List.contains command.Target variables ->
+            failwithf
+                "整数変数 %s へBoolean式を代入することはできません。"
+                command.Target
+        | BoolValue _ -> ()
 
     variables
     |> List.map (fun variable ->
@@ -86,8 +92,8 @@ let private updatesFor (variables: string list) (commands: Command list) =
 let private passStackToTarget
     (analysis: CfgAnalysis)
     (target: BasicBlock)
-    (exitStack: Expr list)
-    (updates: Map<string, Expr>)
+    (exitStack: StackValue list)
+    (updates: Map<string, IntExpr>)
     =
     let targetLabel = labelOf target
     let targetEntryStack = analysis.ByLabel.[targetLabel].EntryStack
@@ -103,15 +109,19 @@ let private passStackToTarget
     ||> List.fold (fun currentUpdates (index, (entryValue, exitValue)) ->
         let expectedName = stackVariableName targetLabel index
         match entryValue with
-        | Var name when name = expectedName -> Map.add name exitValue currentUpdates
+        | IntValue(Var name) when name = expectedName ->
+            match exitValue with
+            | IntValue expression -> Map.add name expression currentUpdates
+            | BoolValue _ ->
+                failwithf "遷移 %s でBoolean値を整数スタック変数へ渡せません。" targetLabel
         | _ -> currentUpdates)
 
 let private addTransition
     (transitions: ResizeArray<Transition>)
     (source: string)
     (target: BasicBlock)
-    (updates: Map<string, Expr>)
-    (guard: Expr option)
+    (updates: Map<string, IntExpr>)
+    (guard: BoolExpr option)
     =
     transitions.Add {
         Source = source
@@ -153,7 +163,7 @@ let create (method: MethodDefinition) (analysis: CfgAnalysis) : TransitionSystem
                 | None -> failwithf "条件分岐 %s のガードを復元できませんでした。" source
                 | Some guard ->
                     addTransition transitions source trueBlock (updatesTo trueBlock) (Some guard)
-                    addTransition transitions source falseBlock (updatesTo falseBlock) (Some(Not guard))
+                    addTransition transitions source falseBlock (updatesTo falseBlock) (Some(BoolNot guard))
             | Switch (targets, defaultBlock) ->
                 match analysed.Simulation.SwitchValue with
                 | None -> failwithf "switch %s の値を復元できませんでした。" source
@@ -164,16 +174,15 @@ let create (method: MethodDefinition) (analysis: CfgAnalysis) : TransitionSystem
                             source
                             target
                             (updatesTo target)
-                            (Some(BinOp("==", value, Const index)))
+                            (Some(Compare("==", value, Const index)))
 
                     let defaultGuard =
                         if targets.IsEmpty then None
                         else
                             Some(
-                                BinOp(
-                                    "||",
-                                    BinOp("<", value, Const 0),
-                                    BinOp(">=", value, Const targets.Length)))
+                                BoolOr(
+                                    Compare("<", value, Const 0),
+                                    Compare(">=", value, Const targets.Length)))
                     addTransition
                         transitions
                         source
