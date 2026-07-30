@@ -5,6 +5,7 @@ open System.IO
 open Mono.Cecil
 open CilFrontend.Cfg
 open CilFrontend.StackSim
+open CilFrontend.GuardNormalization
 open CilFrontend.Analysis
 open CilFrontend.TransitionIr
 
@@ -30,7 +31,7 @@ let private renderComparison op left right =
 
 /// KoATに論理和がないため、論理和と!=は複数規則へ展開する。
 let rec private expandGuard expression =
-    match expression with
+    match normalize expression with
     | BoolOr (left, right) -> expandGuard left @ expandGuard right
     | Compare ("!=", left, right) ->
         [ renderComparison "<" left right; renderComparison ">" left right ]
@@ -38,17 +39,8 @@ let rec private expandGuard expression =
         [ renderComparison op left right ]
     | NonZero value ->
         [ renderComparison "<" value (Const 0); renderComparison ">" value (Const 0) ]
-    | BoolNot inner ->
-        match inner with
-        | Compare (">", left, right) -> [ renderComparison "<=" left right ]
-        | Compare (">=", left, right) -> [ renderComparison "<" left right ]
-        | Compare ("<", left, right) -> [ renderComparison ">=" left right ]
-        | Compare ("<=", left, right) -> [ renderComparison ">" left right ]
-        | Compare ("==", left, right) ->
-            [ renderComparison "<" left right; renderComparison ">" left right ]
-        | Compare ("!=", left, right) -> [ renderComparison "==" left right ]
-        | NonZero value -> [ renderComparison "==" value (Const 0) ]
-        | _ -> failwith "複合した否定ガードはまだKoAT形式へ変換できません。"
+    | BoolNot _ ->
+        failwith "論理和などを含む複合した否定ガードはまだKoAT形式へ変換できません。"
     | _ -> failwithf "KoAT形式へ変換できないガードです: %s" (renderBoolExpr expression)
 
 let private locationApplication label arguments =
@@ -71,6 +63,7 @@ let private renderTransition (variables: string list) (transition: Transition) =
         else sprintf "  %s -> %s [%s]" lhs rhs guard)
 
 let render (transitionSystem: TransitionSystem) =
+    let transitionSystem = validate transitionSystem
     let rules =
         transitionSystem.Transitions
         |> List.collect (renderTransition transitionSystem.Variables)

@@ -9,6 +9,7 @@
     <!-- F#はファイルの並び順がコンパイル順=依存関係の順になる点がC#と違う -->
     <Compile Include="Cfg.fs" />
     <Compile Include="StackSim.fs" />
+    <Compile Include="GuardNormalization.fs" />
     <Compile Include="Analysis.fs" />
     <Compile Include="TransitionIr.fs" />
     <Compile Include="Koat.fs" />
