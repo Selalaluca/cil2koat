@@ -12,6 +12,7 @@
     <Compile Include="Analysis.fs" />
     <Compile Include="TransitionIr.fs" />
     <Compile Include="Koat.fs" />
+    <Compile Include="MethodSelection.fs" />
     <Compile Include="Program.fs" />
   </ItemGroup>
 

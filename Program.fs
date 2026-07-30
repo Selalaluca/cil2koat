@@ -5,11 +5,13 @@ open CilFrontend.Cfg
 open CilFrontend.StackSim
 open CilFrontend.Analysis
 open CilFrontend.Koat
+open CilFrontend.MethodSelection
 
 [<EntryPoint>]
 let main argv =
     if argv.Length < 2 then
-        printfn "使い方: CilFrontend <アセンブリのパス> <メソッド名> [出力.koat]"
+        printfn "使い方: CilFrontend <アセンブリのパス> <メソッド指定> [出力.koat]"
+        printfn "厳密指定例: static:Namespace.Type::Method(System.Int32)"
         1
     else
         let assemblyPath = argv.[0]
@@ -17,19 +19,18 @@ let main argv =
 
         let assembly = AssemblyDefinition.ReadAssembly(assemblyPath)
 
-        let methodOpt =
-            assembly.MainModule.Types
-            |> Seq.collect (fun t -> t.Methods)
-            |> Seq.tryFind (fun m -> m.Name = methodName)
+        let methodResult =
+            try Ok(selectMethod assembly methodName)
+            with error -> Error error.Message
 
-        match methodOpt with
-        | None ->
-            printfn "メソッド '%s' が見つかりませんでした。" methodName
+        match methodResult with
+        | Error message ->
+            printfn "%s" message
             1
-        | Some method when not method.HasBody ->
+        | Ok method when not method.HasBody ->
             printfn "メソッド '%s' は本体(IL)を持っていません。" methodName
             1
-        | Some method ->
+        | Ok method ->
             printfn "=== %s ===" method.FullName
             printfn ""
 
