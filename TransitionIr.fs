@@ -39,7 +39,7 @@ let private parameterName (parameter: ParameterDefinition) =
     else
         parameter.Name
 
-let private collectVariables (method: MethodDefinition) =
+let private collectProgramVariables (method: MethodDefinition) =
     let parameters =
         method.Parameters
         |> Seq.filter (fun parameter -> isIntegerType parameter.ParameterType)
@@ -51,6 +51,22 @@ let private collectVariables (method: MethodDefinition) =
         |> Seq.map (fun variable -> sprintf "loc%d" variable.Index)
 
     Seq.append parameters locals |> Seq.distinct |> List.ofSeq
+
+let private collectStackVariables (analysis: CfgAnalysis) =
+    analysis.Blocks
+    |> List.collect (fun block ->
+        let label = labelOf block
+        match analysis.ByLabel.TryGetValue label with
+        | false, _ -> []
+        | true, analysed ->
+            analysed.EntryStack
+            |> List.indexed
+            |> List.choose (fun (index, expression) ->
+                let expectedName = stackVariableName label index
+                match expression with
+                | Var name when name = expectedName -> Some name
+                | _ -> None))
+    |> List.distinct
 
 let private updatesFor (variables: string list) (commands: Command list) =
     let latest = Dictionary<string, Expr>()
@@ -65,6 +81,30 @@ let private updatesFor (variables: string list) (commands: Command list) =
             | false, _ -> Var variable
         variable, value)
     |> Map.ofList
+
+/// targetの抽象入口スタック変数へ、このCFG辺から到着する実際の値を渡す。
+let private passStackToTarget
+    (analysis: CfgAnalysis)
+    (target: BasicBlock)
+    (exitStack: Expr list)
+    (updates: Map<string, Expr>)
+    =
+    let targetLabel = labelOf target
+    let targetEntryStack = analysis.ByLabel.[targetLabel].EntryStack
+
+    if List.length targetEntryStack <> List.length exitStack then
+        failwithf
+            "遷移 %s の入口と出口で評価スタックの高さが一致しません: %d と %d"
+            targetLabel
+            (List.length targetEntryStack)
+            (List.length exitStack)
+
+    (updates, List.indexed (List.zip targetEntryStack exitStack))
+    ||> List.fold (fun currentUpdates (index, (entryValue, exitValue)) ->
+        let expectedName = stackVariableName targetLabel index
+        match entryValue with
+        | Var name when name = expectedName -> Map.add name exitValue currentUpdates
+        | _ -> currentUpdates)
 
 let private addTransition
     (transitions: ResizeArray<Transition>)
@@ -82,7 +122,16 @@ let private addTransition
 
 /// 共通CFG解析結果を、出力形式に依存しない遷移系へ変換する。
 let create (method: MethodDefinition) (analysis: CfgAnalysis) : TransitionSystem =
-    let variables = collectVariables method
+    let programVariables = collectProgramVariables method
+    let stackVariables = collectStackVariables analysis
+    let collisions = Set.intersect (Set.ofList programVariables) (Set.ofList stackVariables)
+
+    if not collisions.IsEmpty then
+        failwithf
+            "プログラム変数名が予約済みのスタック変数名と衝突しています: %s"
+            (String.concat ", " collisions)
+
+    let variables = programVariables @ stackVariables
     let transitions = ResizeArray<Transition>()
 
     for block in analysis.Blocks do
@@ -90,24 +139,32 @@ let create (method: MethodDefinition) (analysis: CfgAnalysis) : TransitionSystem
         match analysis.ByLabel.TryGetValue source with
         | false, _ -> ()
         | true, analysed ->
-            let updates = updatesFor variables analysed.Simulation.Commands
+            let baseUpdates = updatesFor variables analysed.Simulation.Commands
+            let updatesTo target =
+                passStackToTarget analysis target analysed.Simulation.ExitStack baseUpdates
+
             match analysed.Terminator with
             | MethodReturn -> ()
             | Unconditional target
             | FallsThrough target ->
-                addTransition transitions source target updates None
+                addTransition transitions source target (updatesTo target) None
             | Conditional (trueBlock, falseBlock) ->
                 match analysed.Simulation.Guard with
                 | None -> failwithf "条件分岐 %s のガードを復元できませんでした。" source
                 | Some guard ->
-                    addTransition transitions source trueBlock updates (Some guard)
-                    addTransition transitions source falseBlock updates (Some(Not guard))
+                    addTransition transitions source trueBlock (updatesTo trueBlock) (Some guard)
+                    addTransition transitions source falseBlock (updatesTo falseBlock) (Some(Not guard))
             | Switch (targets, defaultBlock) ->
                 match analysed.Simulation.SwitchValue with
                 | None -> failwithf "switch %s の値を復元できませんでした。" source
                 | Some value ->
                     for index, target in List.indexed targets do
-                        addTransition transitions source target updates (Some(BinOp("==", value, Const index)))
+                        addTransition
+                            transitions
+                            source
+                            target
+                            (updatesTo target)
+                            (Some(BinOp("==", value, Const index)))
 
                     let defaultGuard =
                         if targets.IsEmpty then None
@@ -117,7 +174,12 @@ let create (method: MethodDefinition) (analysis: CfgAnalysis) : TransitionSystem
                                     "||",
                                     BinOp("<", value, Const 0),
                                     BinOp(">=", value, Const targets.Length)))
-                    addTransition transitions source defaultBlock updates defaultGuard
+                    addTransition
+                        transitions
+                        source
+                        defaultBlock
+                        (updatesTo defaultBlock)
+                        defaultGuard
 
     {
         Start = labelOf (List.head analysis.Blocks)

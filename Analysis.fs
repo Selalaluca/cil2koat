@@ -26,6 +26,10 @@ let private successors terminator =
     | FallsThrough next -> [ next ]
     | MethodReturn -> []
 
+/// ブロック入口の評価スタックスロットに割り当てる、予約済みの変数名。
+let stackVariableName targetLabel index =
+    sprintf "stack_%s_%d" targetLabel index
+
 /// 合流元ごとに異なる式が来るスタックスロットを、ブロック入口の抽象変数にする。
 let private mergeStacks targetLabel oldStack newStack =
     if List.length oldStack <> List.length newStack then
@@ -38,7 +42,7 @@ let private mergeStacks targetLabel oldStack newStack =
     List.map3
         (fun index oldValue newValue ->
             if oldValue = newValue then oldValue
-            else Var(sprintf "stack_%s_%d" targetLabel index))
+            else Var(stackVariableName targetLabel index))
         [ 0 .. List.length oldStack - 1 ]
         oldStack
         newStack
