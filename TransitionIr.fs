@@ -80,7 +80,8 @@ let private collectProgramVariables (method: MethodDefinition) =
         method.Parameters
         |> Seq.choose (fun parameter ->
             if isIntegerType parameter.ParameterType then Some(parameterName parameter)
-            elif isStringType parameter.ParameterType || isListType parameter.ParameterType || isGenericListType parameter.ParameterType then
+            elif isStringType parameter.ParameterType || isListType parameter.ParameterType
+                 || isGenericListType parameter.ParameterType || isArrayType parameter.ParameterType then
                 Some(sizeVariableName (parameterName parameter))
             else None)
 
@@ -89,7 +90,8 @@ let private collectProgramVariables (method: MethodDefinition) =
         |> Seq.choose (fun variable ->
             let name = sprintf "loc%d" variable.Index
             if isIntegerType variable.VariableType then Some name
-            elif isStringType variable.VariableType || isListType variable.VariableType || isGenericListType variable.VariableType then
+            elif isStringType variable.VariableType || isListType variable.VariableType
+                 || isGenericListType variable.VariableType || isArrayType variable.VariableType then
                 Some(sizeVariableName name)
             elif isGenericListEnumeratorType variable.VariableType then Some(name + "_remaining")
             else None)
@@ -112,6 +114,7 @@ let private collectStackVariables (analysis: CfgAnalysis) =
                 | StringValue(Var name) when name = expectedName -> Some name
                 | ListValue(Var name) when name = expectedName -> Some name
                 | GenericListValue(Var name) when name = expectedName -> Some name
+                | ArrayValue(Var name) when name = expectedName -> Some name
                 | ListEnumeratorValue(Var name) when name = expectedName -> Some name
                 | _ -> None))
     |> List.distinct
@@ -126,7 +129,7 @@ let private updatesFor (variables: string list) (commands: Command list) =
                 "整数変数 %s へBoolean式を代入することはできません。"
                 command.Target
         | BoolValue _ -> ()
-        | StringValue _ | ListValue _ | GenericListValue _ | ListEnumeratorValue _
+        | StringValue _ | ListValue _ | GenericListValue _ | ArrayValue _ | ListEnumeratorValue _
         | UnknownElementValue | LocalAddress _ | NullValue ->
             failwithf "内部エラー: 参照値 %s が整数更新へ残っています。" command.Target
 
@@ -177,6 +180,10 @@ let private passStackToTarget
             match exitValue with
             | GenericListValue length -> Map.add name length currentUpdates
             | _ -> failwithf "遷移 %s でList<T>以外をList<T>スタック変数へ渡せません。" targetLabel
+        | ArrayValue(Var name) when name = expectedName ->
+            match exitValue with
+            | ArrayValue length -> Map.add name length currentUpdates
+            | _ -> failwithf "遷移 %s で配列以外を配列スタック変数へ渡せません。" targetLabel
         | ListEnumeratorValue(Var name) when name = expectedName ->
             match exitValue with
             | ListEnumeratorValue remaining -> Map.add name remaining currentUpdates

@@ -101,6 +101,7 @@ CILの基本ブロックに対応する規則が生成されます。
 | F# `'T list` | `<変数名>_length`というリスト長 |
 | C# `List<T>` | `<変数名>_length`という要素数 |
 | `List<T>.Enumerator` | `<ローカル名>_remaining`という未走査要素数 |
+| 1次元配列 `T[]` | `<変数名>_length`という要素数 |
 
 整数型のビット幅や符号は、現在のKoAT遷移系には保持されません。
 
@@ -113,6 +114,8 @@ CILの基本ブロックに対応する規則が生成されます。
 - `string.Length`、`String.IsNullOrEmpty`
 - C# `List<T>`を`<変数名>_length`、その`foreach`列挙子を残り要素数として抽象化
 - `List<T>.Count`、`GetEnumerator`、`MoveNext`、要素値に依存しない`foreach`
+- 1次元配列の生成、代入、`Length`、要素値に依存しない`for`／`foreach`
+- 配列用の`newarr`、`ldlen`、`ldelem.*`と、典型的な`conv.i4`
 - F#リストの`Length`、`IsEmpty`、`Tail`、コンパイラ内部の`TailOrNull`、`List.length`
 - 評価スタックを介した整数式と代入の復元
 - CFG合流点における整数スタック値の受け渡し
@@ -142,13 +145,31 @@ public static int CountItems(List<int> xs)
 
 標準的な`foreach`が生成する`GetEnumerator`、`MoveNext`、`Current`、`Dispose`、`try/finally`に付随する限定的なCIL命令を認識します。一方、`sum += item`や`if (item > 0)`のように要素値を計算や分岐へ使用する処理は拒否します。
 
+### 配列の`for`／`foreach`
+
+1次元配列も長さだけを追跡し、C#コンパイラが配列の`foreach`を展開した添字ループを変換できます。
+
+```csharp
+public static int CountArray(int[] xs)
+{
+    int count = 0;
+    foreach (int item in xs)
+    {
+        count++;
+    }
+    return count;
+}
+```
+
+`ldelem.*`で読み出した要素は未知要素として扱います。読み捨てることはできますが、要素値を算術や分岐に使用する処理は拒否します。`stelem.*`による要素の書き込みも未対応です。多次元配列、非ゼロ始点の配列、配列要素間の関係は扱いません。
+
 ## 主な制限
 
 - 解析単位は単一メソッドです。
 - `float`（`System.Single`）、`double`（`System.Double`）、`decimal`（`System.Decimal`）は未対応です。浮動小数点定数・演算・比較、IEEE 754の`NaN`、無限大、丸め、`-0.0`は表現しません。`decimal`の演算として生成される`System.Decimal`のメソッド呼び出しにも対応していません。
 - `char`の文字値、enum固有の意味、nullable型、任意精度整数や有理数も未対応です。
 - 文字列とリストは長さだけを追跡し、文字・要素の値は追跡しません。
-- `call`／`callvirt`は上記の文字列・リスト操作だけに対応します。一般のメソッド呼び出し、直接・相互再帰、配列、フィールド、一般の例外フロー、高階関数は未対応です。
+- `call`／`callvirt`は上記の文字列・リスト操作だけに対応します。一般のメソッド呼び出し、直接・相互再帰、フィールド、一般の例外フロー、高階関数は未対応です。
 - F#リストではランタイム表現に合わせてnullを空リストとして扱います。文字列ではnullと空文字列を同一視せず、長さだけでは安全に表現できないnull代入や参照値のnull分岐を拒否します。
 - CILの有限幅整数とKoATの数学的整数の意味の差は未解決です。オーバーフローし得るプログラムでは、変換結果が元プログラムの意味を完全には保存しない可能性があります。
 - 一般の符号なし比較は、符号付き整数比較へ誤変換せず拒否します。ただし、C#コンパイラが`x != 0`に使用する特定の`cgt.un`パターンは正規化します。

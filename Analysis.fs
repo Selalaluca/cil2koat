@@ -52,6 +52,8 @@ let private mergeStacks targetLabel oldStack newStack =
                     ListValue(Var(stackVariableName targetLabel index))
                 | GenericListValue _, GenericListValue _ ->
                     GenericListValue(Var(stackVariableName targetLabel index))
+                | ArrayValue _, ArrayValue _ ->
+                    ArrayValue(Var(stackVariableName targetLabel index))
                 | ListEnumeratorValue _, ListEnumeratorValue _ ->
                     ListEnumeratorValue(Var(stackVariableName targetLabel index))
                 | UnknownElementValue, UnknownElementValue -> UnknownElementValue

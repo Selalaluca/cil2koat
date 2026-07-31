@@ -28,6 +28,8 @@ type StackValue =
     | ListValue of length: IntExpr
     /// System.Collections.Generic.List<T>そのものではなく要素数を保持する。
     | GenericListValue of length: IntExpr
+    /// 配列そのものではなく要素数を保持する。
+    | ArrayValue of length: IntExpr
     /// List<T>.Enumeratorの未走査要素数を保持する。
     | ListEnumeratorValue of remaining: IntExpr
     /// foreachのCurrent。要素値に依存しない走査だけを許可するための印。
@@ -49,6 +51,8 @@ let isGenericListType (t: TypeReference) =
 
 let isGenericListEnumeratorType (t: TypeReference) =
     t.FullName.StartsWith("System.Collections.Generic.List`1/Enumerator", StringComparison.Ordinal)
+
+let isArrayType (t: TypeReference) = t.IsArray
 
 let sizeVariableName name = name + "_length"
 
@@ -75,6 +79,7 @@ let renderStackValue value =
     | StringValue length -> sprintf "string(length=%s)" (renderIntExpr length)
     | ListValue length -> sprintf "list(length=%s)" (renderIntExpr length)
     | GenericListValue length -> sprintf "List<T>(count=%s)" (renderIntExpr length)
+    | ArrayValue length -> sprintf "array(length=%s)" (renderIntExpr length)
     | ListEnumeratorValue remaining -> sprintf "List<T>.Enumerator(remaining=%s)" (renderIntExpr remaining)
     | UnknownElementValue -> "foreach-element"
     | LocalAddress name -> sprintf "&%s" name
@@ -138,7 +143,7 @@ let simulateBlock
         | IntValue expression -> expression
         | BoolValue _ ->
             failwithf "%s でBoolean値を整数式として使用することはできません。" (instructionText ())
-        | StringValue _ | ListValue _ | GenericListValue _ | ListEnumeratorValue _
+        | StringValue _ | ListValue _ | GenericListValue _ | ArrayValue _ | ListEnumeratorValue _
         | UnknownElementValue | LocalAddress _ | NullValue ->
             failwithf "%s で参照値を整数式として使用することはできません。" (instructionText ())
 
@@ -152,7 +157,7 @@ let simulateBlock
                 (instructionText ())
         // F#リストは空リストをnullで表すため、非null判定は非空判定と一致する。
         | ListValue length -> NonZero length
-        | GenericListValue _ | ListEnumeratorValue _ | UnknownElementValue | LocalAddress _ ->
+        | GenericListValue _ | ArrayValue _ | ListEnumeratorValue _ | UnknownElementValue | LocalAddress _ ->
             failwithf "%s でこの参照値を条件として使用することはできません。" (instructionText ())
         | NullValue -> Compare("!=", Const 0, Const 0)
 
@@ -168,6 +173,7 @@ let simulateBlock
         if isStringType variableType then StringValue(Var(sizeVariableName name))
         elif isListType variableType then ListValue(Var(sizeVariableName name))
         elif isGenericListType variableType then GenericListValue(Var(sizeVariableName name))
+        elif isArrayType variableType then ArrayValue(Var(sizeVariableName name))
         elif isGenericListEnumeratorType variableType then
             ListEnumeratorValue(Var(name + "_remaining"))
         else IntValue(Var name)
@@ -206,6 +212,13 @@ let simulateBlock
                 | NullValue ->
                     failwithf "%s でnullをList<T>変数 %s へ代入する処理は要素数だけでは表現できません。" (instructionText ()) name
                 | _ -> failwithf "%s でList<T>変数 %s へ不正な値を代入できません。" (instructionText ()) name
+            elif isArrayType variableType then
+                match value with
+                | ArrayValue length ->
+                    ArrayValue length, Some { Target = sizeVariableName name; Value = IntValue length }
+                | NullValue ->
+                    failwithf "%s でnullを配列変数 %s へ代入する処理は長さだけでは表現できません。" (instructionText ()) name
+                | _ -> failwithf "%s で配列変数 %s へ不正な値を代入できません。" (instructionText ()) name
             elif isGenericListEnumeratorType variableType then
                 match value with
                 | ListEnumeratorValue remaining ->
@@ -339,6 +352,25 @@ let simulateBlock
             let value = instr.Operand :?> string
             stack.Push(StringValue(Const value.Length))
         | Code.Ldnull -> stack.Push NullValue
+        | Code.Newarr ->
+            let length = popInt "配列の長さ"
+            stack.Push(ArrayValue length)
+        | Code.Ldlen ->
+            match pop "配列のLength" with
+            | ArrayValue length -> stack.Push(IntValue length)
+            | _ -> failwithf "%s のldlenに配列以外の値が渡されました。" (instructionText ())
+        | Code.Ldelem_I | Code.Ldelem_I1 | Code.Ldelem_U1
+        | Code.Ldelem_I2 | Code.Ldelem_U2 | Code.Ldelem_I4
+        | Code.Ldelem_U4 | Code.Ldelem_I8 | Code.Ldelem_R4
+        | Code.Ldelem_R8 | Code.Ldelem_Ref | Code.Ldelem_Any ->
+            popInt "配列の添字" |> ignore
+            match pop "配列要素の読み取り" with
+            | ArrayValue _ -> stack.Push UnknownElementValue
+            | _ -> failwithf "%s のldelemに配列以外の値が渡されました。" (instructionText ())
+        | Code.Stelem_I | Code.Stelem_I1 | Code.Stelem_I2 | Code.Stelem_I4
+        | Code.Stelem_I8 | Code.Stelem_R4 | Code.Stelem_R8 | Code.Stelem_Ref
+        | Code.Stelem_Any ->
+            failwithf "%s の配列要素への書き込みは未対応です。" (instructionText ())
 
         | Code.Ldloc_0 -> stack.Push(readVariable "loc0" (localAt 0).VariableType)
         | Code.Ldloc_1 -> stack.Push(readVariable "loc1" (localAt 1).VariableType)
@@ -373,6 +405,7 @@ let simulateBlock
         | Code.Ceq -> stack.Push(BoolValue(popComparison "=="))
         | Code.Neg ->
             stack.Push(IntValue(BinOp("-", Const 0, popInt "符号反転")))
+        | Code.Conv_I4 -> stack.Push(IntValue(popInt "Int32への変換"))
         | Code.Dup -> stack.Push(peek "dup")
         | Code.Pop -> pop "pop" |> ignore
 
