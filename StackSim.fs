@@ -108,6 +108,8 @@ type SimulationResult = {
     SwitchValue: IntExpr option
     /// スタックの底から先頭の順
     ExitStack: StackValue list
+    /// 同一staticメソッドへの末尾呼び出しを、入口への遷移として扱う。
+    TailRecursiveCall: bool
 }
 
 let simulateBlock
@@ -124,6 +126,7 @@ let simulateBlock
     let mutable guard = None
     let mutable switchValue = None
     let mutable currentInstruction: Instruction option = None
+    let mutable tailRecursiveCall = false
 
     let instructionText () =
         match currentInstruction with
@@ -268,54 +271,80 @@ let simulateBlock
             if called.HasThis then Some(pop "インスタンスメソッドのレシーバー")
             else None
 
-        match called.DeclaringType.FullName, called.Name, receiver, arguments with
-        | "System.String", "get_Length", Some(StringValue length), [] ->
-            stack.Push(IntValue length)
-        | "System.String", "IsNullOrEmpty", None, [ StringValue length ] ->
-            stack.Push(BoolValue(Compare("==", length, Const 0)))
-        | "System.String", "IsNullOrEmpty", None, [ NullValue ] ->
-            stack.Push(BoolValue(Compare("==", Const 0, Const 0)))
-        | declaringType, "get_Length", Some(ListValue length), []
-            when declaringType.StartsWith(
-                "Microsoft.FSharp.Collections.FSharpList`1",
-                StringComparison.Ordinal) ->
-            stack.Push(IntValue length)
-        | declaringType, "get_IsEmpty", Some(ListValue length), []
-            when declaringType.StartsWith(
-                "Microsoft.FSharp.Collections.FSharpList`1",
-                StringComparison.Ordinal) ->
-            stack.Push(BoolValue(Compare("==", length, Const 0)))
-        | declaringType, ("get_Tail" | "get_TailOrNull"), Some(ListValue length), []
-            when declaringType.StartsWith(
-                "Microsoft.FSharp.Collections.FSharpList`1",
-                StringComparison.Ordinal) ->
-            stack.Push(ListValue(BinOp("-", length, Const 1)))
-        | "Microsoft.FSharp.Collections.ListModule", "Length", None, [ ListValue length ] ->
-            stack.Push(IntValue length)
-        | declaringType, "get_Count", Some(GenericListValue length), []
-            when declaringType.StartsWith("System.Collections.Generic.List`1", StringComparison.Ordinal) ->
-            stack.Push(IntValue length)
-        | declaringType, "GetEnumerator", Some(GenericListValue length), []
-            when declaringType.StartsWith("System.Collections.Generic.List`1", StringComparison.Ordinal) ->
-            stack.Push(ListEnumeratorValue length)
-        | declaringType, "MoveNext", Some(LocalAddress name), []
-            when declaringType.StartsWith("System.Collections.Generic.List`1/Enumerator", StringComparison.Ordinal) ->
-            let variable = localAt (Int32.Parse(name.Substring(3)))
-            match readVariable name variable.VariableType with
-            | ListEnumeratorValue remaining ->
-                let next = BinOp("-", remaining, Const 1)
-                environment.[name] <- ListEnumeratorValue next
-                commands.Add { Target = name + "_remaining"; Value = IntValue next }
-                stack.Push(BoolValue(Compare(">", remaining, Const 0)))
-            | _ -> failwithf "%s のEnumerator状態が不正です。" (instructionText ())
-        | declaringType, "get_Current", Some(LocalAddress _), []
-            when declaringType.StartsWith("System.Collections.Generic.List`1/Enumerator", StringComparison.Ordinal) ->
-            stack.Push UnknownElementValue
-        | _, "Dispose", Some(LocalAddress _), [] -> ()
-        | _ ->
-            failwithf
-                "未対応の呼び出しです: %s（string/listは長さを取得・更新できる操作だけに対応しています。）"
-                called.FullName
+        let isSelfCall = called.FullName = method.FullName
+        let isTailPosition =
+            match currentInstruction with
+            | None -> false
+            | Some current ->
+                instructions
+                |> List.skipWhile (fun instruction -> instruction.Offset <> current.Offset)
+                |> List.skip 1
+                |> List.forall (fun instruction ->
+                    instruction.OpCode.Code = Code.Nop || instruction.OpCode.Code = Code.Ret)
+
+        if isSelfCall then
+            if method.HasThis then
+                failwithf "%s のinstance再帰は未対応です。" (instructionText ())
+            if method.ReturnType.MetadataType <> MetadataType.Void then
+                failwithf "%s の戻り値を持つ再帰は未対応です。" (instructionText ())
+            if not isTailPosition then
+                failwithf "%s の非末尾再帰は呼び出しスタックが必要なため未対応です。" (instructionText ())
+            if arguments.Length <> method.Parameters.Count then
+                failwithf "%s の再帰呼び出し引数数が一致しません。" (instructionText ())
+
+            List.zip (List.ofSeq method.Parameters) arguments
+            |> List.iter (fun (parameter, value) ->
+                writeVariable (parameterName parameter) parameter.ParameterType value)
+            tailRecursiveCall <- true
+        else
+            match called.DeclaringType.FullName, called.Name, receiver, arguments with
+            | "System.String", "get_Length", Some(StringValue length), [] ->
+                stack.Push(IntValue length)
+            | "System.String", "IsNullOrEmpty", None, [ StringValue length ] ->
+                stack.Push(BoolValue(Compare("==", length, Const 0)))
+            | "System.String", "IsNullOrEmpty", None, [ NullValue ] ->
+                stack.Push(BoolValue(Compare("==", Const 0, Const 0)))
+            | declaringType, "get_Length", Some(ListValue length), []
+                when declaringType.StartsWith(
+                    "Microsoft.FSharp.Collections.FSharpList`1",
+                    StringComparison.Ordinal) ->
+                stack.Push(IntValue length)
+            | declaringType, "get_IsEmpty", Some(ListValue length), []
+                when declaringType.StartsWith(
+                    "Microsoft.FSharp.Collections.FSharpList`1",
+                    StringComparison.Ordinal) ->
+                stack.Push(BoolValue(Compare("==", length, Const 0)))
+            | declaringType, ("get_Tail" | "get_TailOrNull"), Some(ListValue length), []
+                when declaringType.StartsWith(
+                    "Microsoft.FSharp.Collections.FSharpList`1",
+                    StringComparison.Ordinal) ->
+                stack.Push(ListValue(BinOp("-", length, Const 1)))
+            | "Microsoft.FSharp.Collections.ListModule", "Length", None, [ ListValue length ] ->
+                stack.Push(IntValue length)
+            | declaringType, "get_Count", Some(GenericListValue length), []
+                when declaringType.StartsWith("System.Collections.Generic.List`1", StringComparison.Ordinal) ->
+                stack.Push(IntValue length)
+            | declaringType, "GetEnumerator", Some(GenericListValue length), []
+                when declaringType.StartsWith("System.Collections.Generic.List`1", StringComparison.Ordinal) ->
+                stack.Push(ListEnumeratorValue length)
+            | declaringType, "MoveNext", Some(LocalAddress name), []
+                when declaringType.StartsWith("System.Collections.Generic.List`1/Enumerator", StringComparison.Ordinal) ->
+                let variable = localAt (Int32.Parse(name.Substring(3)))
+                match readVariable name variable.VariableType with
+                | ListEnumeratorValue remaining ->
+                    let next = BinOp("-", remaining, Const 1)
+                    environment.[name] <- ListEnumeratorValue next
+                    commands.Add { Target = name + "_remaining"; Value = IntValue next }
+                    stack.Push(BoolValue(Compare(">", remaining, Const 0)))
+                | _ -> failwithf "%s のEnumerator状態が不正です。" (instructionText ())
+            | declaringType, "get_Current", Some(LocalAddress _), []
+                when declaringType.StartsWith("System.Collections.Generic.List`1/Enumerator", StringComparison.Ordinal) ->
+                stack.Push UnknownElementValue
+            | _, "Dispose", Some(LocalAddress _), [] -> ()
+            | _ ->
+                failwithf
+                    "未対応の呼び出しです: %s（対応済みのstring/list/foreach操作と同一staticメソッドへの末尾再帰だけを扱えます。）"
+                    called.FullName
 
     for instr in instructions do
         currentInstruction <- Some instr
@@ -438,4 +467,5 @@ let simulateBlock
         Guard = guard
         SwitchValue = switchValue
         ExitStack = stack.ToArray() |> Array.rev |> List.ofArray
+        TailRecursiveCall = tailRecursiveCall
     }

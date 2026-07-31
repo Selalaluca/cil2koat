@@ -227,42 +227,58 @@ let create (method: MethodDefinition) (analysis: CfgAnalysis) : TransitionSystem
             let updatesTo target =
                 passStackToTarget analysis target analysed.Simulation.ExitStack baseUpdates
 
-            match analysed.Terminator with
-            | MethodReturn -> ()
-            | Unconditional target
-            | FallsThrough target ->
-                addTransition transitions source target (updatesTo target) None
-            | Conditional (trueBlock, falseBlock) ->
-                match analysed.Simulation.Guard with
-                | None -> failwithf "条件分岐 %s のガードを復元できませんでした。" source
-                | Some guard ->
-                    addTransition transitions source trueBlock (updatesTo trueBlock) (Some guard)
-                    addTransition transitions source falseBlock (updatesTo falseBlock) (Some(BoolNot guard))
-            | Switch (targets, defaultBlock) ->
-                match analysed.Simulation.SwitchValue with
-                | None -> failwithf "switch %s の値を復元できませんでした。" source
-                | Some value ->
-                    for index, target in List.indexed targets do
+            let tailCallFallsIntoReturn =
+                match analysed.Terminator with
+                | MethodReturn -> true
+                | FallsThrough target ->
+                    target.Instructions
+                    |> List.forall (fun instruction ->
+                        instruction.OpCode.Code = Mono.Cecil.Cil.Code.Nop
+                        || instruction.OpCode.Code = Mono.Cecil.Cil.Code.Ret)
+                | _ -> false
+
+            if analysed.Simulation.TailRecursiveCall then
+                if not tailCallFallsIntoReturn then
+                    failwithf "ブロック %s の再帰呼び出しは末尾位置ではありません。" source
+                let entryBlock = List.head analysis.Blocks
+                addTransition transitions source entryBlock baseUpdates None
+            else
+                match analysed.Terminator with
+                | MethodReturn -> ()
+                | Unconditional target
+                | FallsThrough target ->
+                    addTransition transitions source target (updatesTo target) None
+                | Conditional (trueBlock, falseBlock) ->
+                    match analysed.Simulation.Guard with
+                    | None -> failwithf "条件分岐 %s のガードを復元できませんでした。" source
+                    | Some guard ->
+                        addTransition transitions source trueBlock (updatesTo trueBlock) (Some guard)
+                        addTransition transitions source falseBlock (updatesTo falseBlock) (Some(BoolNot guard))
+                | Switch (targets, defaultBlock) ->
+                    match analysed.Simulation.SwitchValue with
+                    | None -> failwithf "switch %s の値を復元できませんでした。" source
+                    | Some value ->
+                        for index, target in List.indexed targets do
+                            addTransition
+                                transitions
+                                source
+                                target
+                                (updatesTo target)
+                                (Some(Compare("==", value, Const index)))
+
+                        let defaultGuard =
+                            if targets.IsEmpty then None
+                            else
+                                Some(
+                                    BoolOr(
+                                        Compare("<", value, Const 0),
+                                        Compare(">=", value, Const targets.Length)))
                         addTransition
                             transitions
                             source
-                            target
-                            (updatesTo target)
-                            (Some(Compare("==", value, Const index)))
-
-                    let defaultGuard =
-                        if targets.IsEmpty then None
-                        else
-                            Some(
-                                BoolOr(
-                                    Compare("<", value, Const 0),
-                                    Compare(">=", value, Const targets.Length)))
-                    addTransition
-                        transitions
-                        source
-                        defaultBlock
-                        (updatesTo defaultBlock)
-                        defaultGuard
+                            defaultBlock
+                            (updatesTo defaultBlock)
+                            defaultGuard
 
     {
         Start = labelOf (List.head analysis.Blocks)
