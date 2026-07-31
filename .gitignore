@@ -4,6 +4,7 @@
 
 !/Cfg.fs
 !/StackSim.fs
+!/GuardNormalization.fs
 !/Analysis.fs
 !/TransitionIr.fs
 !/Koat.fs
@@ -11,5 +12,4 @@
 !/MethodSelection.fs
 !/Sample.cs
 !/CilFrontend.fsproj
-!/README.md
 !.gitignore

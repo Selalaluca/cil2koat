@@ -46,13 +46,23 @@ let private mergeStacks targetLabel oldStack newStack =
                 match oldValue, newValue with
                 | IntValue _, IntValue _ ->
                     IntValue(Var(stackVariableName targetLabel index))
+                | StringValue _, StringValue _ ->
+                    StringValue(Var(stackVariableName targetLabel index))
+                | ListValue _, ListValue _ ->
+                    ListValue(Var(stackVariableName targetLabel index))
+                | GenericListValue _, GenericListValue _ ->
+                    GenericListValue(Var(stackVariableName targetLabel index))
+                | ListEnumeratorValue _, ListEnumeratorValue _ ->
+                    ListEnumeratorValue(Var(stackVariableName targetLabel index))
+                | UnknownElementValue, UnknownElementValue -> UnknownElementValue
+                | NullValue, NullValue -> NullValue
                 | BoolValue _, BoolValue _ ->
                     failwithf
                         "ブロック %s の入口で異なるBooleanスタック値を合流できません。"
                         targetLabel
                 | _ ->
                     failwithf
-                        "ブロック %s の入口で整数値とBoolean値を合流できません。"
+                        "ブロック %s の入口で異なる種類のスタック値を合流できません。"
                         targetLabel)
         [ 0 .. List.length oldStack - 1 ]
         oldStack

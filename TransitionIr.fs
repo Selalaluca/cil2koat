@@ -78,13 +78,21 @@ let private parameterName (parameter: ParameterDefinition) =
 let private collectProgramVariables (method: MethodDefinition) =
     let parameters =
         method.Parameters
-        |> Seq.filter (fun parameter -> isIntegerType parameter.ParameterType)
-        |> Seq.map parameterName
+        |> Seq.choose (fun parameter ->
+            if isIntegerType parameter.ParameterType then Some(parameterName parameter)
+            elif isStringType parameter.ParameterType || isListType parameter.ParameterType || isGenericListType parameter.ParameterType then
+                Some(sizeVariableName (parameterName parameter))
+            else None)
 
     let locals =
         method.Body.Variables
-        |> Seq.filter (fun variable -> isIntegerType variable.VariableType)
-        |> Seq.map (fun variable -> sprintf "loc%d" variable.Index)
+        |> Seq.choose (fun variable ->
+            let name = sprintf "loc%d" variable.Index
+            if isIntegerType variable.VariableType then Some name
+            elif isStringType variable.VariableType || isListType variable.VariableType || isGenericListType variable.VariableType then
+                Some(sizeVariableName name)
+            elif isGenericListEnumeratorType variable.VariableType then Some(name + "_remaining")
+            else None)
 
     Seq.append parameters locals |> Seq.distinct |> List.ofSeq
 
@@ -101,6 +109,10 @@ let private collectStackVariables (analysis: CfgAnalysis) =
                 let expectedName = stackVariableName label index
                 match expression with
                 | IntValue(Var name) when name = expectedName -> Some name
+                | StringValue(Var name) when name = expectedName -> Some name
+                | ListValue(Var name) when name = expectedName -> Some name
+                | GenericListValue(Var name) when name = expectedName -> Some name
+                | ListEnumeratorValue(Var name) when name = expectedName -> Some name
                 | _ -> None))
     |> List.distinct
 
@@ -114,6 +126,9 @@ let private updatesFor (variables: string list) (commands: Command list) =
                 "整数変数 %s へBoolean式を代入することはできません。"
                 command.Target
         | BoolValue _ -> ()
+        | StringValue _ | ListValue _ | GenericListValue _ | ListEnumeratorValue _
+        | UnknownElementValue | LocalAddress _ | NullValue ->
+            failwithf "内部エラー: 参照値 %s が整数更新へ残っています。" command.Target
 
     variables
     |> List.map (fun variable ->
@@ -148,8 +163,24 @@ let private passStackToTarget
         | IntValue(Var name) when name = expectedName ->
             match exitValue with
             | IntValue expression -> Map.add name expression currentUpdates
-            | BoolValue _ ->
+            | _ ->
                 failwithf "遷移 %s でBoolean値を整数スタック変数へ渡せません。" targetLabel
+        | StringValue(Var name) when name = expectedName ->
+            match exitValue with
+            | StringValue length -> Map.add name length currentUpdates
+            | _ -> failwithf "遷移 %s で文字列以外を文字列スタック変数へ渡せません。" targetLabel
+        | ListValue(Var name) when name = expectedName ->
+            match exitValue with
+            | ListValue length -> Map.add name length currentUpdates
+            | _ -> failwithf "遷移 %s でリスト以外をリストスタック変数へ渡せません。" targetLabel
+        | GenericListValue(Var name) when name = expectedName ->
+            match exitValue with
+            | GenericListValue length -> Map.add name length currentUpdates
+            | _ -> failwithf "遷移 %s でList<T>以外をList<T>スタック変数へ渡せません。" targetLabel
+        | ListEnumeratorValue(Var name) when name = expectedName ->
+            match exitValue with
+            | ListEnumeratorValue remaining -> Map.add name remaining currentUpdates
+            | _ -> failwithf "遷移 %s でEnumerator以外をEnumeratorスタック変数へ渡せません。" targetLabel
         | _ -> currentUpdates)
 
 let private addTransition
