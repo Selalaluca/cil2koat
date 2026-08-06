@@ -57,6 +57,9 @@ let private mergeStacks targetLabel oldStack newStack =
                 | ListEnumeratorValue _, ListEnumeratorValue _ ->
                     ListEnumeratorValue(Var(stackVariableName targetLabel index))
                 | UnknownElementValue, UnknownElementValue -> UnknownElementValue
+                | ClosureValue (leftMethod, leftCaptures), ClosureValue (rightMethod, rightCaptures)
+                    when leftMethod.FullName = rightMethod.FullName && leftCaptures = rightCaptures ->
+                    ClosureValue(leftMethod, leftCaptures)
                 | NullValue, NullValue -> NullValue
                 | BoolValue _, BoolValue _ ->
                     failwithf

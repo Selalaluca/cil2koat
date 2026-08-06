@@ -119,6 +119,17 @@ let private collectStackVariables (analysis: CfgAnalysis) =
                 | _ -> None))
     |> List.distinct
 
+let private libraryLoopVariable source = sprintf "summary_%s_remaining" source
+
+let private collectLibraryLoopVariables (analysis: CfgAnalysis) =
+    analysis.Blocks
+    |> List.choose (fun block ->
+        let source = labelOf block
+        match analysis.ByLabel.TryGetValue source with
+        | true, analysed when Option.isSome analysed.Simulation.LibraryLoop ->
+            Some(libraryLoopVariable source)
+        | _ -> None)
+
 let private updatesFor (variables: string list) (commands: Command list) =
     let latest = Dictionary<string, IntExpr>()
     for command in commands do
@@ -130,7 +141,7 @@ let private updatesFor (variables: string list) (commands: Command list) =
                 command.Target
         | BoolValue _ -> ()
         | StringValue _ | ListValue _ | GenericListValue _ | ArrayValue _ | ListEnumeratorValue _
-        | UnknownElementValue | LocalAddress _ | NullValue ->
+        | UnknownElementValue | LocalAddress _ | ClosureValue _ | NullValue ->
             failwithf "内部エラー: 参照値 %s が整数更新へ残っています。" command.Target
 
     variables
@@ -208,14 +219,16 @@ let private addTransition
 let create (method: MethodDefinition) (analysis: CfgAnalysis) : TransitionSystem =
     let programVariables = collectProgramVariables method
     let stackVariables = collectStackVariables analysis
-    let collisions = Set.intersect (Set.ofList programVariables) (Set.ofList stackVariables)
+    let libraryLoopVariables = collectLibraryLoopVariables analysis
+    let generatedVariables = stackVariables @ libraryLoopVariables
+    let collisions = Set.intersect (Set.ofList programVariables) (Set.ofList generatedVariables)
 
     if not collisions.IsEmpty then
         failwithf
             "プログラム変数名が予約済みのスタック変数名と衝突しています: %s"
             (String.concat ", " collisions)
 
-    let variables = programVariables @ stackVariables
+    let variables = programVariables @ generatedVariables
     let transitions = ResizeArray<Transition>()
 
     for block in analysis.Blocks do
@@ -242,6 +255,34 @@ let create (method: MethodDefinition) (analysis: CfgAnalysis) : TransitionSystem
                     failwithf "ブロック %s の再帰呼び出しは末尾位置ではありません。" source
                 let entryBlock = List.head analysis.Blocks
                 addTransition transitions source entryBlock baseUpdates None
+            elif Option.isSome analysed.Simulation.LibraryLoop then
+                if analysed.Terminator <> MethodReturn then
+                    failwithf "ブロック %s のライブラリループはメソッド末尾にありません。" source
+
+                let summary = Option.get analysed.Simulation.LibraryLoop
+                let remaining = libraryLoopVariable source
+                let loopLocation = source + "_library_loop"
+                let entryUpdates = Map.add remaining summary.InputLength baseUpdates
+                transitions.Add {
+                    Source = source
+                    Target = loopLocation
+                    Updates = entryUpdates
+                    Guard = None
+                }
+
+                let loopUpdates =
+                    variables
+                    |> List.map (fun variable ->
+                        if variable = remaining then
+                            variable, BinOp("-", Var remaining, Const 1)
+                        else variable, Var variable)
+                    |> Map.ofList
+                transitions.Add {
+                    Source = loopLocation
+                    Target = loopLocation
+                    Updates = loopUpdates
+                    Guard = Some(Compare(">", Var remaining, Const 0))
+                }
             else
                 match analysed.Terminator with
                 | MethodReturn -> ()

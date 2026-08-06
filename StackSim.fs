@@ -36,6 +36,8 @@ type StackValue =
     | UnknownElementValue
     /// 値型Enumeratorへのldloca。MoveNextで元のローカルを更新する。
     | LocalAddress of name: string
+    /// 閉じた世界で呼出し先を一意に解決できたF#クロージャ。
+    | ClosureValue of invokeMethod: MethodDefinition * captures: StackValue list
     /// null判定を扱うための値。空文字列・空リストとは同一視しない。
     | NullValue
 
@@ -83,9 +85,21 @@ let renderStackValue value =
     | ListEnumeratorValue remaining -> sprintf "List<T>.Enumerator(remaining=%s)" (renderIntExpr remaining)
     | UnknownElementValue -> "foreach-element"
     | LocalAddress name -> sprintf "&%s" name
+    | ClosureValue (invokeMethod, captures) ->
+        sprintf "closure(%s,captures=%d)" invokeMethod.FullName captures.Length
     | NullValue -> "null"
 
 type Command = { Target: string; Value: StackValue }
+
+type LibraryLoopKind =
+    | ListMapLoop
+    | ListFilterLoop
+
+/// 停止性をKoAT側で確認させる、既知ライブラリの有限走査要約。
+type LibraryLoopSummary = {
+    Kind: LibraryLoopKind
+    InputLength: IntExpr
+}
 
 let renderCommand command =
     sprintf "%s = %s" command.Target (renderStackValue command.Value)
@@ -108,8 +122,9 @@ type SimulationResult = {
     SwitchValue: IntExpr option
     /// スタックの底から先頭の順
     ExitStack: StackValue list
-    /// 同一staticメソッドへの末尾呼び出しを、入口への遷移として扱う。
+    /// 同一staticメソッドへの末尾呼び出しを、戻り値の有無にかかわらず入口への遷移として扱う。
     TailRecursiveCall: bool
+    LibraryLoop: LibraryLoopSummary option
 }
 
 let simulateBlock
@@ -127,6 +142,7 @@ let simulateBlock
     let mutable switchValue = None
     let mutable currentInstruction: Instruction option = None
     let mutable tailRecursiveCall = false
+    let mutable libraryLoop = None
 
     let instructionText () =
         match currentInstruction with
@@ -147,7 +163,7 @@ let simulateBlock
         | BoolValue _ ->
             failwithf "%s でBoolean値を整数式として使用することはできません。" (instructionText ())
         | StringValue _ | ListValue _ | GenericListValue _ | ArrayValue _ | ListEnumeratorValue _
-        | UnknownElementValue | LocalAddress _ | NullValue ->
+        | UnknownElementValue | LocalAddress _ | ClosureValue _ | NullValue ->
             failwithf "%s で参照値を整数式として使用することはできません。" (instructionText ())
 
     let toBool value =
@@ -160,7 +176,8 @@ let simulateBlock
                 (instructionText ())
         // F#リストは空リストをnullで表すため、非null判定は非空判定と一致する。
         | ListValue length -> NonZero length
-        | GenericListValue _ | ArrayValue _ | ListEnumeratorValue _ | UnknownElementValue | LocalAddress _ ->
+        | GenericListValue _ | ArrayValue _ | ListEnumeratorValue _ | UnknownElementValue | LocalAddress _
+        | ClosureValue _ ->
             failwithf "%s でこの参照値を条件として使用することはできません。" (instructionText ())
         | NullValue -> Compare("!=", Const 0, Const 0)
 
@@ -230,6 +247,8 @@ let simulateBlock
             else
                 match value with
                 | UnknownElementValue -> UnknownElementValue, None
+                | ClosureValue _ ->
+                    failwithf "%s で関数値を整数変数 %s へ代入することはできません。" (instructionText ()) name
                 | _ -> value, Some { Target = name; Value = value }
 
         environment.[name] <- storedValue
@@ -265,6 +284,92 @@ let simulateBlock
         [ for index in 1 .. count -> pop (sprintf "呼び出し引数 %d" index) ]
         |> List.rev
 
+    let isIntegerLikeType (t: TypeReference) =
+        match t.MetadataType with
+        | MetadataType.SByte | MetadataType.Byte
+        | MetadataType.Int16 | MetadataType.UInt16
+        | MetadataType.Int32 | MetadataType.UInt32
+        | MetadataType.Int64 | MetadataType.UInt64 -> true
+        | _ -> false
+
+    let validateSimpleCallback (invokeMethod: MethodDefinition) =
+        if not invokeMethod.HasBody then
+            failwithf "callback %s はCIL本体を持っていません。" invokeMethod.FullName
+
+        let instructions = List.ofSeq invokeMethod.Body.Instructions
+        let offsets = instructions |> List.map (fun instruction -> instruction.Offset) |> Set.ofList
+
+        let branchTargets (instruction: Instruction) =
+            match instruction.Operand with
+            | :? Instruction as target -> [ target ]
+            | :? (Instruction array) as targets -> List.ofArray targets
+            | _ -> []
+
+        for instruction in instructions do
+            let supported =
+                match instruction.OpCode.Code with
+                | Code.Nop | Code.Ret
+                | Code.Ldarg_0 | Code.Ldarg_1 | Code.Ldarg_2 | Code.Ldarg_3
+                | Code.Ldarg | Code.Ldarg_S
+                | Code.Ldc_I4_M1 | Code.Ldc_I4_0 | Code.Ldc_I4_1 | Code.Ldc_I4_2
+                | Code.Ldc_I4_3 | Code.Ldc_I4_4 | Code.Ldc_I4_5 | Code.Ldc_I4_6
+                | Code.Ldc_I4_7 | Code.Ldc_I4_8 | Code.Ldc_I4 | Code.Ldc_I4_S
+                | Code.Ldfld
+                | Code.Add | Code.Sub | Code.Mul | Code.Neg | Code.Conv_I4
+                | Code.Ceq | Code.Cgt | Code.Clt
+                | Code.Br | Code.Br_S
+                | Code.Brtrue | Code.Brtrue_S | Code.Brfalse | Code.Brfalse_S
+                | Code.Beq | Code.Beq_S | Code.Bne_Un | Code.Bne_Un_S
+                | Code.Bgt | Code.Bgt_S | Code.Bge | Code.Bge_S
+                | Code.Blt | Code.Blt_S | Code.Ble | Code.Ble_S -> true
+                | _ -> false
+
+            if not supported then
+                failwithf
+                    "callback %s は未対応命令 IL_%04X (%s) を含みます。"
+                    invokeMethod.FullName instruction.Offset instruction.OpCode.Name
+
+            match instruction.OpCode.Code, instruction.Operand with
+            | Code.Ldfld, (:? FieldReference as field) when not (isIntegerLikeType field.FieldType) ->
+                failwithf "callback %s は整数以外のフィールド %s を読み取ります。" invokeMethod.FullName field.FullName
+            | Code.Ldfld, _ -> ()
+            | _ -> ()
+
+            for target in branchTargets instruction do
+                if not (Set.contains target.Offset offsets) then
+                    failwithf "callback %s の分岐先がメソッド本体の外です。" invokeMethod.FullName
+                if target.Offset <= instruction.Offset then
+                    failwithf "callback %s は循環する可能性があるため未対応です。" invokeMethod.FullName
+
+    let pushClosure (closureType: TypeDefinition) captures =
+        let invokeMethods =
+            closureType.Methods
+            |> Seq.filter (fun candidate -> candidate.Name = "Invoke" && candidate.HasBody)
+            |> Seq.toList
+        match invokeMethods with
+        | [ invokeMethod ] ->
+            validateSimpleCallback invokeMethod
+            stack.Push(ClosureValue(invokeMethod, captures))
+        | [] -> failwithf "クロージャ型 %s にInvoke本体がありません。" closureType.FullName
+        | _ -> failwithf "クロージャ型 %s のInvokeを一意に特定できません。" closureType.FullName
+
+    let createClosure (constructor: MethodReference) =
+        let captures = popCallArguments constructor.Parameters.Count
+        for parameter, capture in Seq.zip constructor.Parameters captures do
+            if not (isIntegerLikeType parameter.ParameterType) then
+                failwithf "クロージャ %s の整数以外のキャプチャ %s は未対応です。" constructor.DeclaringType.FullName parameter.ParameterType.FullName
+            match capture with
+            | IntValue _ -> ()
+            | _ -> failwithf "クロージャ %s のキャプチャ値は整数式ではありません。" constructor.DeclaringType.FullName
+
+        pushClosure (constructor.DeclaringType.Resolve()) captures
+
+    let loadStaticClosure (field: FieldReference) =
+        let closureType = field.FieldType.Resolve()
+        if isNull closureType then
+            failwithf "%s の静的フィールド型を解決できません。" (instructionText ())
+        pushClosure closureType []
+
     let handleCall (called: MethodReference) =
         let arguments = popCallArguments called.Parameters.Count
         let receiver =
@@ -282,11 +387,18 @@ let simulateBlock
                 |> List.forall (fun instruction ->
                     instruction.OpCode.Code = Code.Nop || instruction.OpCode.Code = Code.Ret)
 
+        let setLibraryLoop kind length =
+            if not isTailPosition then
+                failwithf
+                    "%s のList.map／List.filter結果を後続処理で使う明示ループ変換は未対応です。"
+                    (instructionText ())
+            if Option.isSome libraryLoop then
+                failwithf "%s の基本ブロックには複数のライブラリループがあります。" (instructionText ())
+            libraryLoop <- Some { Kind = kind; InputLength = length }
+
         if isSelfCall then
             if method.HasThis then
                 failwithf "%s のinstance再帰は未対応です。" (instructionText ())
-            if method.ReturnType.MetadataType <> MetadataType.Void then
-                failwithf "%s の戻り値を持つ再帰は未対応です。" (instructionText ())
             if not isTailPosition then
                 failwithf "%s の非末尾再帰は呼び出しスタックが必要なため未対応です。" (instructionText ())
             if arguments.Length <> method.Parameters.Count then
@@ -321,6 +433,15 @@ let simulateBlock
                 stack.Push(ListValue(BinOp("-", length, Const 1)))
             | "Microsoft.FSharp.Collections.ListModule", "Length", None, [ ListValue length ] ->
                 stack.Push(IntValue length)
+            | "Microsoft.FSharp.Collections.ListModule", "Map", None,
+                [ ClosureValue _; ListValue length ] ->
+                // callbackはcreateClosureで非循環・副作用なしの有限CILに限定済み。
+                setLibraryLoop ListMapLoop length
+                stack.Push(ListValue length)
+            | "Microsoft.FSharp.Collections.ListModule", "Filter", None,
+                [ ClosureValue _; ListValue length ] ->
+                setLibraryLoop ListFilterLoop length
+                stack.Push(ListValue length)
             | declaringType, "get_Count", Some(GenericListValue length), []
                 when declaringType.StartsWith("System.Collections.Generic.List`1", StringComparison.Ordinal) ->
                 stack.Push(IntValue length)
@@ -381,9 +502,12 @@ let simulateBlock
             let value = instr.Operand :?> string
             stack.Push(StringValue(Const value.Length))
         | Code.Ldnull -> stack.Push NullValue
+        | Code.Ldsfld -> loadStaticClosure (instr.Operand :?> FieldReference)
         | Code.Newarr ->
             let length = popInt "配列の長さ"
             stack.Push(ArrayValue length)
+        | Code.Newobj ->
+            createClosure (instr.Operand :?> MethodReference)
         | Code.Ldlen ->
             match pop "配列のLength" with
             | ArrayValue length -> stack.Push(IntValue length)
@@ -454,7 +578,7 @@ let simulateBlock
         | Code.Switch -> switchValue <- Some(popInt "switch")
         | Code.Call | Code.Callvirt ->
             handleCall (instr.Operand :?> MethodReference)
-        | Code.Constrained -> ()
+        | Code.Constrained | Code.Tail -> ()
         | Code.Br | Code.Br_S | Code.Leave | Code.Leave_S | Code.Endfinally | Code.Ret -> ()
         | other ->
             failwithf
@@ -468,4 +592,5 @@ let simulateBlock
         SwitchValue = switchValue
         ExitStack = stack.ToArray() |> Array.rev |> List.ofArray
         TailRecursiveCall = tailRecursiveCall
+        LibraryLoop = libraryLoop
     }

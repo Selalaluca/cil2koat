@@ -10,6 +10,5 @@
 !/Koat.fs
 !/Program.fs
 !/MethodSelection.fs
-!/Sample.cs
 !/CilFrontend.fsproj
 !.gitignore
