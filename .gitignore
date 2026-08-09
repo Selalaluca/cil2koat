@@ -1,7 +1,6 @@
 /*
 /.**
 
-!.gitignore
 !/Analysis.fs
 !/AbstractValues.fs
 !/Cfg.fs
