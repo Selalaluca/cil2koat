@@ -2,6 +2,8 @@ module CilFrontend.Program
 
 open Mono.Cecil
 open CilFrontend.Cfg
+open CilFrontend.Expressions
+open CilFrontend.AbstractValues
 open CilFrontend.StackSim
 open CilFrontend.Analysis
 open CilFrontend.Koat
@@ -14,8 +16,8 @@ let main argv =
         printfn "厳密指定例: static:Namespace.Type::Method(System.Int32)"
         1
     else
-        let assemblyPath = argv.[0]
-        let methodName = argv.[1]
+        let assemblyPath = argv[0]
+        let methodName = argv[1]
 
         let assembly = AssemblyDefinition.ReadAssembly(assemblyPath)
 
@@ -87,7 +89,7 @@ let main argv =
                 printfn ""
 
             if argv.Length >= 3 then
-                writeAnalysis method analysis argv.[2]
-                printfn "KoATファイルを書き出しました: %s" argv.[2]
+                writeAnalysis method analysis argv[2]
+                printfn "KoATファイルを書き出しました: %s" argv[2]
 
             0

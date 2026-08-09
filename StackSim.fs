@@ -4,128 +4,9 @@ open System
 open System.Collections.Generic
 open Mono.Cecil
 open Mono.Cecil.Cil
-
-/// KoATの整数更新として扱う算術式。
-type IntExpr =
-    | Const of int
-    | Var of string
-    | BinOp of string * IntExpr * IntExpr
-
-/// 遷移のガードとしてだけ扱う論理式。
-type BoolExpr =
-    | Compare of string * IntExpr * IntExpr
-    | NonZero of IntExpr
-    | BoolNot of BoolExpr
-    | BoolOr of BoolExpr * BoolExpr
-
-/// CILではBooleanも評価スタック上の値なので、スタック層では両者を保持する。
-type StackValue =
-    | IntValue of IntExpr
-    | BoolValue of BoolExpr
-    /// 文字列そのものではなく、KoATで追跡する長さを保持する。
-    | StringValue of length: IntExpr
-    /// リストそのものではなく、KoATで追跡する残り要素数を保持する。
-    | ListValue of length: IntExpr
-    /// System.Collections.Generic.List<T>そのものではなく要素数を保持する。
-    | GenericListValue of length: IntExpr
-    /// 配列そのものではなく要素数を保持する。
-    | ArrayValue of length: IntExpr
-    /// List<T>.Enumeratorの未走査要素数を保持する。
-    | ListEnumeratorValue of remaining: IntExpr
-    /// foreachのCurrent。要素値に依存しない走査だけを許可するための印。
-    | UnknownElementValue
-    /// 値型Enumeratorへのldloca。MoveNextで元のローカルを更新する。
-    | LocalAddress of name: string
-    /// 閉じた世界で呼出し先を一意に解決できたF#クロージャ。
-    | ClosureValue of invokeMethod: MethodDefinition * captures: StackValue list
-    /// null判定を扱うための値。空文字列・空リストとは同一視しない。
-    | NullValue
-
-let isStringType (t: TypeReference) =
-    t.FullName = "System.String"
-
-let isListType (t: TypeReference) =
-    t.FullName.StartsWith("Microsoft.FSharp.Collections.FSharpList`1", StringComparison.Ordinal)
-
-let isGenericListType (t: TypeReference) =
-    t.FullName.StartsWith("System.Collections.Generic.List`1", StringComparison.Ordinal)
-    && not (t.FullName.Contains("/Enumerator", StringComparison.Ordinal))
-
-let isGenericListEnumeratorType (t: TypeReference) =
-    t.FullName.StartsWith("System.Collections.Generic.List`1/Enumerator", StringComparison.Ordinal)
-
-let isArrayType (t: TypeReference) = t.IsArray
-
-let sizeVariableName name = name + "_length"
-
-let rec renderIntExpr expression =
-    match expression with
-    | Const n -> string n
-    | Var name -> name
-    | BinOp (op, left, right) ->
-        sprintf "(%s %s %s)" (renderIntExpr left) op (renderIntExpr right)
-
-let rec renderBoolExpr expression =
-    match expression with
-    | Compare (op, left, right) ->
-        sprintf "(%s %s %s)" (renderIntExpr left) op (renderIntExpr right)
-    | NonZero value -> sprintf "(%s != 0)" (renderIntExpr value)
-    | BoolNot inner -> sprintf "!(%s)" (renderBoolExpr inner)
-    | BoolOr (left, right) ->
-        sprintf "(%s || %s)" (renderBoolExpr left) (renderBoolExpr right)
-
-let renderStackValue value =
-    match value with
-    | IntValue expression -> renderIntExpr expression
-    | BoolValue expression -> renderBoolExpr expression
-    | StringValue length -> sprintf "string(length=%s)" (renderIntExpr length)
-    | ListValue length -> sprintf "list(length=%s)" (renderIntExpr length)
-    | GenericListValue length -> sprintf "List<T>(count=%s)" (renderIntExpr length)
-    | ArrayValue length -> sprintf "array(length=%s)" (renderIntExpr length)
-    | ListEnumeratorValue remaining -> sprintf "List<T>.Enumerator(remaining=%s)" (renderIntExpr remaining)
-    | UnknownElementValue -> "foreach-element"
-    | LocalAddress name -> sprintf "&%s" name
-    | ClosureValue (invokeMethod, captures) ->
-        sprintf "closure(%s,captures=%d)" invokeMethod.FullName captures.Length
-    | NullValue -> "null"
-
-type Command = { Target: string; Value: StackValue }
-
-type LibraryLoopKind =
-    | ListMapLoop
-    | ListFilterLoop
-
-/// 停止性をKoAT側で確認させる、既知ライブラリの有限走査要約。
-type LibraryLoopSummary = {
-    Kind: LibraryLoopKind
-    InputLength: IntExpr
-}
-
-let renderCommand command =
-    sprintf "%s = %s" command.Target (renderStackValue command.Value)
-
-let private argName (method: MethodDefinition) index =
-    if method.HasThis then
-        if index = 0 then "this"
-        else method.Parameters.[index - 1].Name
-    else method.Parameters.[index].Name
-
-let private parameterName (parameter: ParameterDefinition) =
-    if String.IsNullOrWhiteSpace parameter.Name then sprintf "arg%d" parameter.Index
-    else parameter.Name
-
-let private localName (variable: VariableDefinition) = sprintf "loc%d" variable.Index
-
-type SimulationResult = {
-    Commands: Command list
-    Guard: BoolExpr option
-    SwitchValue: IntExpr option
-    /// スタックの底から先頭の順
-    ExitStack: StackValue list
-    /// 同一staticメソッドへの末尾呼び出しを、戻り値の有無にかかわらず入口への遷移として扱う。
-    TailRecursiveCall: bool
-    LibraryLoop: LibraryLoopSummary option
-}
+open CilFrontend.Expressions
+open CilFrontend.CilTypes
+open CilFrontend.AbstractValues
 
 let simulateBlock
     (method: MethodDefinition)
@@ -133,6 +14,7 @@ let simulateBlock
     (instructions: Instruction list)
     : SimulationResult =
 
+    // CFG辺から渡されたスタックは底から先頭の順なので、その順にPushしてCILのスタックを復元する。
     let stack = Stack<StackValue>()
     for value in initialStack do stack.Push value
 
@@ -204,6 +86,8 @@ let simulateBlock
         | false, _ -> initialValue name variableType
 
     let writeVariable name variableType value =
+        // 参照型は値そのものではなく長さ・残数へ抽象化する。
+        // environmentは同一ブロック内の後続命令用、CommandはCFG辺の更新生成用で、両方の更新が必要になる。
         let storedValue, command =
             if isStringType variableType then
                 match value with
@@ -251,17 +135,17 @@ let simulateBlock
                     failwithf "%s で関数値を整数変数 %s へ代入することはできません。" (instructionText ()) name
                 | _ -> value, Some { Target = name; Value = value }
 
-        environment.[name] <- storedValue
+        environment[name] <- storedValue
         command |> Option.iter commands.Add
 
     let argumentType index =
         if method.HasThis then
             if index = 0 then method.DeclaringType :> TypeReference
-            else method.Parameters.[index - 1].ParameterType
+            else method.Parameters[index - 1].ParameterType
         else
-            method.Parameters.[index].ParameterType
+            method.Parameters[index].ParameterType
 
-    let localAt index = method.Body.Variables.[index]
+    let localAt index = method.Body.Variables[index]
 
     let popArithmetic op =
         let right = popInt (sprintf "演算 %s の右辺" op)
@@ -276,11 +160,13 @@ let simulateBlock
     let popUnsignedGreater () =
         let right = popInt "符号なし比較の右辺"
         let left = popInt "符号なし比較の左辺"
+        // C#コンパイラがx != 0をcgt.un x 0へ落とす既知形だけ、数学的整数上の!=へ安全に戻す。
         match right with
         | Const 0 -> Compare("!=", left, right)
         | _ -> Compare(">u", left, right)
 
     let popCallArguments count =
+        // CILは左から評価した引数を順に積むため、popした並びを反転して宣言順へ戻す。
         [ for index in 1 .. count -> pop (sprintf "呼び出し引数 %d" index) ]
         |> List.rev
 
@@ -293,6 +179,8 @@ let simulateBlock
         | _ -> false
 
     let validateSimpleCallback (invokeMethod: MethodDefinition) =
+        // map/filterの1反復を有限とみなす根拠をここで確認する。
+        // 未知call、状態更新、後方分岐を許可リストから外し、判断できないcallbackは変換しない。
         if not invokeMethod.HasBody then
             failwithf "callback %s はCIL本体を持っていません。" invokeMethod.FullName
 
@@ -342,6 +230,7 @@ let simulateBlock
                     failwithf "callback %s は循環する可能性があるため未対応です。" invokeMethod.FullName
 
     let pushClosure (closureType: TypeDefinition) captures =
+        // 閉じた世界でInvoke本体を1つに解決できるクロージャだけを抽象値として保持する。
         let invokeMethods =
             closureType.Methods
             |> Seq.filter (fun candidate -> candidate.Name = "Invoke" && candidate.HasBody)
@@ -371,12 +260,15 @@ let simulateBlock
         pushClosure closureType []
 
     let handleCall (called: MethodReference) =
+        // call命令は末尾再帰と既知ライブラリ要約にだけ展開する。
+        // 一般のcallを副作用なしと仮定すると停止性を誤証明し得るため、未知呼び出しは明示的に拒否する。
         let arguments = popCallArguments called.Parameters.Count
         let receiver =
             if called.HasThis then Some(pop "インスタンスメソッドのレシーバー")
             else None
 
         let isSelfCall = called.FullName = method.FullName
+        // call後がnop/retだけなら、復帰後に追加計算がない末尾位置として扱える。
         let isTailPosition =
             match currentInstruction with
             | None -> false
@@ -388,6 +280,7 @@ let simulateBlock
                     instruction.OpCode.Code = Code.Nop || instruction.OpCode.Code = Code.Ret)
 
         let setLibraryLoop kind length =
+            // 現在のIRは基本ブロック途中へ継続位置を挿入できないため、map/filterが末尾にある場合だけ展開する。
             if not isTailPosition then
                 failwithf
                     "%s のList.map／List.filter結果を後続処理で使う明示ループ変換は未対応です。"
@@ -409,6 +302,7 @@ let simulateBlock
                 writeVariable (parameterName parameter) parameter.ParameterType value)
             tailRecursiveCall <- true
         else
+            // 呼出し先の型・名前、receiver、引数の抽象値から、対応済みライブラリ操作の効果を判定する。
             match called.DeclaringType.FullName, called.Name, receiver, arguments with
             | "System.String", "get_Length", Some(StringValue length), [] ->
                 stack.Push(IntValue length)
@@ -416,6 +310,7 @@ let simulateBlock
                 stack.Push(BoolValue(Compare("==", length, Const 0)))
             | "System.String", "IsNullOrEmpty", None, [ NullValue ] ->
                 stack.Push(BoolValue(Compare("==", Const 0, Const 0)))
+
             | declaringType, "get_Length", Some(ListValue length), []
                 when declaringType.StartsWith(
                     "Microsoft.FSharp.Collections.FSharpList`1",
@@ -433,15 +328,17 @@ let simulateBlock
                 stack.Push(ListValue(BinOp("-", length, Const 1)))
             | "Microsoft.FSharp.Collections.ListModule", "Length", None, [ ListValue length ] ->
                 stack.Push(IntValue length)
+
             | "Microsoft.FSharp.Collections.ListModule", "Map", None,
                 [ ClosureValue _; ListValue length ] ->
-                // callbackはcreateClosureで非循環・副作用なしの有限CILに限定済み。
+                // callbackの有限性はClosureValue構築時に検査済み。ここではリスト走査回数だけを要約する。
                 setLibraryLoop ListMapLoop length
                 stack.Push(ListValue length)
             | "Microsoft.FSharp.Collections.ListModule", "Filter", None,
                 [ ClosureValue _; ListValue length ] ->
                 setLibraryLoop ListFilterLoop length
                 stack.Push(ListValue length)
+
             | declaringType, "get_Count", Some(GenericListValue length), []
                 when declaringType.StartsWith("System.Collections.Generic.List`1", StringComparison.Ordinal) ->
                 stack.Push(IntValue length)
@@ -450,11 +347,12 @@ let simulateBlock
                 stack.Push(ListEnumeratorValue length)
             | declaringType, "MoveNext", Some(LocalAddress name), []
                 when declaringType.StartsWith("System.Collections.Generic.List`1/Enumerator", StringComparison.Ordinal) ->
+                // MoveNextの戻り値は更新前のremaining > 0、次回状態はremaining - 1として同時に表す。
                 let variable = localAt (Int32.Parse(name.Substring(3)))
                 match readVariable name variable.VariableType with
                 | ListEnumeratorValue remaining ->
                     let next = BinOp("-", remaining, Const 1)
-                    environment.[name] <- ListEnumeratorValue next
+                    environment[name] <- ListEnumeratorValue next
                     commands.Add { Target = name + "_remaining"; Value = IntValue next }
                     stack.Push(BoolValue(Compare(">", remaining, Const 0)))
                 | _ -> failwithf "%s のEnumerator状態が不正です。" (instructionText ())
@@ -462,19 +360,23 @@ let simulateBlock
                 when declaringType.StartsWith("System.Collections.Generic.List`1/Enumerator", StringComparison.Ordinal) ->
                 stack.Push UnknownElementValue
             | _, "Dispose", Some(LocalAddress _), [] -> ()
+
             | _ ->
                 failwithf
                     "未対応の呼び出しです: %s（対応済みのstring/list/foreach操作と同一staticメソッドへの末尾再帰だけを扱えます。）"
                     called.FullName
 
+    // 各命令は抽象スタック・環境・ガード・要約のいずれかを更新する。
+    // 対応できない命令は値を推測せず、このブロックの変換全体を失敗させる。
     for instr in instructions do
         currentInstruction <- Some instr
+        // opcodeを判定し、抽象スタック・変数環境・ガード・呼出し要約の対応する状態へ反映する。
         match instr.OpCode.Code with
         | Code.Nop -> ()
-        | Code.Ldarg_0 -> stack.Push(readVariable (argName method 0) (argumentType 0))
-        | Code.Ldarg_1 -> stack.Push(readVariable (argName method 1) (argumentType 1))
-        | Code.Ldarg_2 -> stack.Push(readVariable (argName method 2) (argumentType 2))
-        | Code.Ldarg_3 -> stack.Push(readVariable (argName method 3) (argumentType 3))
+        | Code.Ldarg_0 -> stack.Push(readVariable (argumentName method 0) (argumentType 0))
+        | Code.Ldarg_1 -> stack.Push(readVariable (argumentName method 1) (argumentType 1))
+        | Code.Ldarg_2 -> stack.Push(readVariable (argumentName method 2) (argumentType 2))
+        | Code.Ldarg_3 -> stack.Push(readVariable (argumentName method 3) (argumentType 3))
         | Code.Ldarg | Code.Ldarg_S ->
             let parameter = instr.Operand :?> ParameterDefinition
             stack.Push(readVariable (parameterName parameter) parameter.ParameterType)

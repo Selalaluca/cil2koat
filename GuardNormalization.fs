@@ -1,10 +1,11 @@
 module CilFrontend.GuardNormalization
 
-open CilFrontend.StackSim
+open CilFrontend.Expressions
 
 /// 整数意味論だけで同値と分かる、局所的なガード正規化。
 /// 到達可能性の推論や遷移の削除は行わない。
 let rec normalize expression =
+    // ガードの形を判定し、局所的に同値な簡約と否定比較の反転を再帰的に適用する。
     match expression with
     | Compare _ -> expression
     | NonZero value -> NonZero value
@@ -13,6 +14,7 @@ let rec normalize expression =
         let normalizedRight = normalize right
         if normalizedLeft = normalizedRight then normalizedLeft
         else BoolOr(normalizedLeft, normalizedRight)
+
     | BoolNot inner ->
         match normalize inner with
         | BoolNot nested -> normalize nested

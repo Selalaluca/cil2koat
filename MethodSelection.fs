@@ -19,6 +19,7 @@ let private dispatchPrefix (methodDefinition: MethodDefinition) =
     if methodDefinition.HasThis then "instance:" else "static:"
 
 let canonicalSelector (methodDefinition: MethodDefinition) =
+    // static/instanceを含め、同名オーバーロードを一意に再指定できる表現を生成する。
     let parameters =
         methodDefinition.Parameters
         |> Seq.map (fun parameter -> parameter.ParameterType.FullName)
@@ -31,6 +32,7 @@ let canonicalSelector (methodDefinition: MethodDefinition) =
         parameters
 
 let private allMethods (assembly: AssemblyDefinition) =
+    // F#クロージャなどはnested typeに生成されるため、トップレベル型だけでなく再帰的に列挙する。
     let rec methodsOfType (typeDefinition: TypeDefinition) =
         seq {
             yield! typeDefinition.Methods
@@ -90,6 +92,7 @@ let private describeCandidates candidates =
     |> String.concat Environment.NewLine
 
 let selectMethod (assembly: AssemblyDefinition) (selectorText: string) =
+    // 短いメソッド名は利便性のため許すが、一意でない場合は候補を示して厳密指定を要求する。
     let methods = allMethods assembly
 
     let candidates =

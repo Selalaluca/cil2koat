@@ -11,9 +11,11 @@
 CIL命令列
   ↓ Cfg.fs
 基本ブロックと制御フロー
+  ↓ Expressions.fs + CilTypes.fs + AbstractValues.fs
+解析用の式・型情報・抽象値
   ↓ StackSim.fs + Analysis.fs
 代入・分岐条件・評価スタック
-  ↓ GuardNormalization.fs + TransitionIr.fs
+  ↓ GuardNormalization.fs + TransitionIr.fs + TransitionValidation.fs
 型付き整数遷移系
   ↓ Koat.fs
 KoAT入力ファイル
@@ -217,10 +219,15 @@ map_loop(...,xs_length,remaining) -> map_loop(...,xs_length,remaining - 1) [rema
 |---|---|
 | `CilFrontend.fsproj` | .NETプロジェクト定義とF#ソースのコンパイル順 |
 | `Cfg.fs` | CIL命令列の基本ブロック分割と終端分類 |
-| `StackSim.fs` | CIL評価スタックのシミュレーションと式の復元 |
+| `Expressions.fs` | 整数式・Boolean式の型とデバッグ表示 |
+| `CilTypes.fs` | Mono.Cecilの型判定と引数・ローカル変数の命名 |
+| `AbstractValues.fs` | 評価スタックの抽象値、コマンド、ライブラリ要約の型 |
+| `StackSim.fs` | CIL命令の評価スタックシミュレーション |
 | `Analysis.fs` | CFG全体のワークリスト解析とスタック値の伝播 |
 | `GuardNormalization.fs` | Booleanガードの局所的な正規化 |
-| `TransitionIr.fs` | 出力形式に依存しない型付き遷移IRの構築と検証 |
+| `TransitionSyntax.fs` | 出力形式に依存しない型付き遷移IRの型 |
+| `TransitionValidation.fs` | 遷移IRの構造的不変条件の検証 |
+| `TransitionIr.fs` | CFG解析結果から遷移IRを構築 |
 | `Koat.fs` | 遷移IRのKoAT形式への変換 |
 | `MethodSelection.fs` | メソッド指定の解析と曖昧性の検出 |
 | `Program.fs` | CLIエントリーポイントと解析結果の表示 |

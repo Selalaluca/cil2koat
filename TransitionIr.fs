@@ -1,81 +1,18 @@
 module CilFrontend.TransitionIr
 
-open System
 open System.Collections.Generic
 open Mono.Cecil
 open CilFrontend.Cfg
-open CilFrontend.StackSim
+open CilFrontend.Expressions
+open CilFrontend.CilTypes
+open CilFrontend.AbstractValues
 open CilFrontend.GuardNormalization
 open CilFrontend.Analysis
-
-/// 1本の制御フロー辺。更新とガードはまだ文字列化しない。
-type Transition = {
-    Source: string
-    Target: string
-    Updates: Map<string, IntExpr>
-    Guard: BoolExpr option
-}
-
-type TransitionSystem = {
-    Start: string
-    Variables: string list
-    Transitions: Transition list
-}
-
-/// バックエンドが前提とする遷移IRの構造的不変条件を検査する。
-let validate (transitionSystem: TransitionSystem) =
-    if String.IsNullOrWhiteSpace transitionSystem.Start then
-        failwith "遷移系の開始位置が空です。"
-
-    let duplicateVariables =
-        transitionSystem.Variables
-        |> List.countBy id
-        |> List.choose (fun (name, count) -> if count > 1 then Some name else None)
-
-    if not duplicateVariables.IsEmpty then
-        failwithf
-            "遷移系に重複した変数があります: %s"
-            (String.concat ", " duplicateVariables)
-
-    let expectedVariables = Set.ofList transitionSystem.Variables
-    for transition in transitionSystem.Transitions do
-        if String.IsNullOrWhiteSpace transition.Source
-           || String.IsNullOrWhiteSpace transition.Target then
-            failwith "遷移の制御位置が空です。"
-
-        let actualVariables =
-            transition.Updates |> Map.toSeq |> Seq.map fst |> Set.ofSeq
-        if actualVariables <> expectedVariables then
-            let missing = Set.difference expectedVariables actualVariables
-            let unknown = Set.difference actualVariables expectedVariables
-            failwithf
-                "遷移 %s -> %s の更新集合が不正です。不足: [%s] 未宣言: [%s]"
-                transition.Source
-                transition.Target
-                (String.concat ", " missing)
-                (String.concat ", " unknown)
-
-    transitionSystem
-
-let private isIntegerType (t: TypeReference) =
-    match t.MetadataType with
-    | MetadataType.SByte
-    | MetadataType.Byte
-    | MetadataType.Int16
-    | MetadataType.UInt16
-    | MetadataType.Int32
-    | MetadataType.UInt32
-    | MetadataType.Int64
-    | MetadataType.UInt64 -> true
-    | _ -> false
-
-let private parameterName (parameter: ParameterDefinition) =
-    if String.IsNullOrWhiteSpace parameter.Name then
-        sprintf "arg%d" parameter.Index
-    else
-        parameter.Name
+open CilFrontend.TransitionSyntax
+open CilFrontend.TransitionValidation
 
 let private collectProgramVariables (method: MethodDefinition) =
+    // 参照型は長さだけを状態変数にし、追跡対象外の型は遷移系へ持ち込まない。
     let parameters =
         method.Parameters
         |> Seq.choose (fun parameter ->
@@ -99,6 +36,7 @@ let private collectProgramVariables (method: MethodDefinition) =
     Seq.append parameters locals |> Seq.distinct |> List.ofSeq
 
 let private collectStackVariables (analysis: CfgAnalysis) =
+    // 合流で導入された予約名の抽象値だけを、ブロック間で受け渡す追加状態変数として収集する。
     analysis.Blocks
     |> List.collect (fun block ->
         let label = labelOf block
@@ -131,10 +69,11 @@ let private collectLibraryLoopVariables (analysis: CfgAnalysis) =
         | _ -> None)
 
 let private updatesFor (variables: string list) (commands: Command list) =
+    // 同一ブロックで複数回代入された変数は最後のCommandを採用し、未代入変数には恒等更新を補う。
     let latest = Dictionary<string, IntExpr>()
     for command in commands do
         match command.Value with
-        | IntValue expression -> latest.[command.Target] <- expression
+        | IntValue expression -> latest[command.Target] <- expression
         | BoolValue _ when List.contains command.Target variables ->
             failwithf
                 "整数変数 %s へBoolean式を代入することはできません。"
@@ -154,6 +93,7 @@ let private updatesFor (variables: string list) (commands: Command list) =
     |> Map.ofList
 
 /// targetの抽象入口スタック変数へ、このCFG辺から到着する実際の値を渡す。
+/// 入口が具体値のスロットは状態変数ではないため更新へ追加しない。
 let private passStackToTarget
     (analysis: CfgAnalysis)
     (target: BasicBlock)
@@ -161,7 +101,7 @@ let private passStackToTarget
     (updates: Map<string, IntExpr>)
     =
     let targetLabel = labelOf target
-    let targetEntryStack = analysis.ByLabel.[targetLabel].EntryStack
+    let targetEntryStack = analysis.ByLabel[targetLabel].EntryStack
 
     if List.length targetEntryStack <> List.length exitStack then
         failwithf
@@ -250,6 +190,7 @@ let create (method: MethodDefinition) (analysis: CfgAnalysis) : TransitionSystem
                         || instruction.OpCode.Code = Mono.Cecil.Cil.Code.Ret)
                 | _ -> false
 
+            // 末尾再帰とライブラリ要約は通常のCFG終端より優先し、専用の遷移へ展開する。
             if analysed.Simulation.TailRecursiveCall then
                 if not tailCallFallsIntoReturn then
                     failwithf "ブロック %s の再帰呼び出しは末尾位置ではありません。" source
@@ -270,6 +211,7 @@ let create (method: MethodDefinition) (analysis: CfgAnalysis) : TransitionSystem
                     Guard = None
                 }
 
+                // callback本体は有限性を前段で確認済み。KoATにはリスト残数が1ずつ減る走査だけを残す。
                 let loopUpdates =
                     variables
                     |> List.map (fun variable ->
@@ -284,6 +226,7 @@ let create (method: MethodDefinition) (analysis: CfgAnalysis) : TransitionSystem
                     Guard = Some(Compare(">", Var remaining, Const 0))
                 }
             else
+                // 基本ブロックの終端種別を判定し、対応するKoAT向け遷移規則へ展開する。
                 match analysed.Terminator with
                 | MethodReturn -> ()
                 | Unconditional target
@@ -293,6 +236,7 @@ let create (method: MethodDefinition) (analysis: CfgAnalysis) : TransitionSystem
                     match analysed.Simulation.Guard with
                     | None -> failwithf "条件分岐 %s のガードを復元できませんでした。" source
                     | Some guard ->
+                        // Cfgが真・偽の順へ正規化済みなので、偽辺には復元ガードの否定を付ける。
                         addTransition transitions source trueBlock (updatesTo trueBlock) (Some guard)
                         addTransition transitions source falseBlock (updatesTo falseBlock) (Some(BoolNot guard))
                 | Switch (targets, defaultBlock) ->
@@ -307,6 +251,7 @@ let create (method: MethodDefinition) (analysis: CfgAnalysis) : TransitionSystem
                                 (updatesTo target)
                                 (Some(Compare("==", value, Const index)))
 
+                        // switchのdefaultは列挙した0..n-1のcase範囲外を表す。
                         let defaultGuard =
                             if targets.IsEmpty then None
                             else

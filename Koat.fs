@@ -4,9 +4,11 @@ open System
 open System.IO
 open Mono.Cecil
 open CilFrontend.Cfg
-open CilFrontend.StackSim
+open CilFrontend.Expressions
 open CilFrontend.GuardNormalization
 open CilFrontend.Analysis
+open CilFrontend.TransitionSyntax
+open CilFrontend.TransitionValidation
 open CilFrontend.TransitionIr
 
 let rec private renderArithmetic expression =
@@ -31,6 +33,7 @@ let private renderComparison op left right =
 
 /// KoATに論理和がないため、論理和と!=は複数規則へ展開する。
 let rec private expandGuard expression =
+    // 正規化後のガード種別を判定し、KoATで表現可能な1本以上の原子的ガードへ展開する。
     match normalize expression with
     | BoolOr (left, right) -> expandGuard left @ expandGuard right
     | Compare ("!=", left, right) ->
@@ -50,7 +53,7 @@ let private renderTransition (variables: string list) (transition: Transition) =
     let lhs = locationApplication transition.Source variables
     let updates =
         variables
-        |> List.map (fun variable -> renderArithmetic transition.Updates.[variable])
+        |> List.map (fun variable -> renderArithmetic transition.Updates[variable])
     let rhs = locationApplication transition.Target updates
     let guards =
         match transition.Guard with

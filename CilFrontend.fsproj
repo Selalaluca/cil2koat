@@ -8,9 +8,14 @@
   <ItemGroup>
     <!-- F#はファイルの並び順がコンパイル順=依存関係の順になる点がC#と違う -->
     <Compile Include="Cfg.fs" />
+    <Compile Include="Expressions.fs" />
+    <Compile Include="CilTypes.fs" />
+    <Compile Include="AbstractValues.fs" />
     <Compile Include="StackSim.fs" />
     <Compile Include="GuardNormalization.fs" />
     <Compile Include="Analysis.fs" />
+    <Compile Include="TransitionSyntax.fs" />
+    <Compile Include="TransitionValidation.fs" />
     <Compile Include="TransitionIr.fs" />
     <Compile Include="Koat.fs" />
     <Compile Include="MethodSelection.fs" />

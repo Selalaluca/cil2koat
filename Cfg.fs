@@ -74,9 +74,9 @@ type Terminator =
 
 let classifyTerminator (block: BasicBlock) (allBlocks: BasicBlock list) : Terminator =
     let findBlockStartingAt offset =
+        // 分岐先はsplitIntoBasicBlocksで必ずリーダーにしているため、未発見はCFG構築の不変条件違反。
         allBlocks
         |> List.find (fun b -> (List.head b.Instructions).Offset = offset)
-        // 見つからない場合は例外(このプロトタイプでは異常系は未対応)
 
     let last = List.last block.Instructions
 
@@ -95,7 +95,7 @@ let classifyTerminator (block: BasicBlock) (allBlocks: BasicBlock list) : Termin
         Unconditional(findBlockStartingAt target.Offset)
 
     | _, FlowControl.Cond_Branch ->
-        // brfalse系は「偽の時に分岐先へ」なので、brtrue系とは真偽の意味が逆になる
+        // 後段が常に「trueBlock、falseBlock」の順で扱えるようbrfalse系だけ枝を反転する。
         let branchMeansTrue =
             match last.OpCode.Code with
             | Code.Brfalse | Code.Brfalse_S -> false
