@@ -22,6 +22,7 @@ type Command = { Target: string; Value: StackValue }
 type LibraryLoopKind =
     | ListMapLoop
     | ListFilterLoop
+    | ListSortLoop
 
 /// 停止性をKoAT側で確認させる、既知ライブラリの有限走査要約。
 type LibraryLoopSummary = {

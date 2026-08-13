@@ -259,6 +259,29 @@ let simulateBlock
             failwithf "%s の静的フィールド型を解決できません。" (instructionText ())
         pushClosure closureType []
 
+    let handleNewObject (constructor: MethodReference) =
+        let arguments = popCallArguments constructor.Parameters.Count
+        let declaringType = constructor.DeclaringType.FullName
+
+        if declaringType.StartsWith(
+            "Microsoft.FSharp.Collections.FSharpList`1",
+            StringComparison.Ordinal) then
+            match arguments with
+            | [ _; ListValue tailLength ] ->
+                // FSharpListのconsセル。要素値は停止性IRでは追跡せず、長さだけを増やす。
+                stack.Push(ListValue(BinOp("+", tailLength, Const 1)))
+            | _ ->
+                failwithf "%s のFSharpListコンストラクター引数が不正です。" (instructionText ())
+        elif declaringType.StartsWith("System.Tuple`", StringComparison.Ordinal)
+             || declaringType.StartsWith("System.ValueTuple`", StringComparison.Ordinal) then
+            // タプルの内容はリスト長抽象化に影響しない。不透明な要素値として保持する。
+            stack.Push UnknownElementValue
+        else
+            // その他のnewobjは、既存のキャプチャ付きクロージャ生成として検査する。
+            // createClosure内でも引数をpopするため、ここで取り出した値を積み直す。
+            arguments |> List.iter stack.Push
+            createClosure constructor
+
     let handleCall (called: MethodReference) =
         // call命令は末尾再帰と既知ライブラリ要約にだけ展開する。
         // 一般のcallを副作用なしと仮定すると停止性を誤証明し得るため、未知呼び出しは明示的に拒否する。
@@ -311,6 +334,18 @@ let simulateBlock
             | "System.String", "IsNullOrEmpty", None, [ NullValue ] ->
                 stack.Push(BoolValue(Compare("==", Const 0, Const 0)))
 
+            | declaringType, "get_Empty", None, []
+                when declaringType.StartsWith(
+                    "Microsoft.FSharp.Collections.FSharpList`1",
+                    StringComparison.Ordinal) ->
+                stack.Push(ListValue(Const 0))
+            | declaringType, "Cons", None, [ _; ListValue tailLength ]
+                when declaringType.StartsWith(
+                    "Microsoft.FSharp.Collections.FSharpList`1",
+                    StringComparison.Ordinal) ->
+                // 要素値は捨象し、consによる長さの増加だけを保持する。
+                stack.Push(ListValue(BinOp("+", tailLength, Const 1)))
+
             | declaringType, "get_Length", Some(ListValue length), []
                 when declaringType.StartsWith(
                     "Microsoft.FSharp.Collections.FSharpList`1",
@@ -328,6 +363,9 @@ let simulateBlock
                 stack.Push(ListValue(BinOp("-", length, Const 1)))
             | "Microsoft.FSharp.Collections.ListModule", "Length", None, [ ListValue length ] ->
                 stack.Push(IntValue length)
+            | "Microsoft.FSharp.Collections.ListModule", ("Reverse" | "Rev"), None, [ ListValue length ] ->
+                // 反転は有限リストを一度走査するが、結果の長さは変わらない。
+                stack.Push(ListValue length)
 
             | "Microsoft.FSharp.Collections.ListModule", "Map", None,
                 [ ClosureValue _; ListValue length ] ->
@@ -337,6 +375,11 @@ let simulateBlock
             | "Microsoft.FSharp.Collections.ListModule", "Filter", None,
                 [ ClosureValue _; ListValue length ] ->
                 setLibraryLoop ListFilterLoop length
+                stack.Push(ListValue length)
+            | "Microsoft.FSharp.Collections.ListModule", "Sort", None, [ ListValue length ] ->
+                // List.sortは要素数を保存する有限ライブラリ処理として要約する。
+                // 比較回数の計算量は扱わず、停止性のための有限な残数ループだけをIRへ残す。
+                setLibraryLoop ListSortLoop length
                 stack.Push(ListValue length)
 
             | declaringType, "get_Count", Some(GenericListValue length), []
@@ -409,7 +452,7 @@ let simulateBlock
             let length = popInt "配列の長さ"
             stack.Push(ArrayValue length)
         | Code.Newobj ->
-            createClosure (instr.Operand :?> MethodReference)
+            handleNewObject (instr.Operand :?> MethodReference)
         | Code.Ldlen ->
             match pop "配列のLength" with
             | ArrayValue length -> stack.Push(IntValue length)

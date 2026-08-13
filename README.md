@@ -193,7 +193,7 @@ public static int CountArray(int[] xs)
 - `float`（`System.Single`）、`double`（`System.Double`）、`decimal`（`System.Decimal`）は未対応です。浮動小数点定数・演算・比較、IEEE 754の`NaN`、無限大、丸め、`-0.0`は表現しません。`decimal`の演算として生成される`System.Decimal`のメソッド呼び出しにも対応していません。
 - `char`の文字値、enum固有の意味、nullable型、任意精度整数や有理数も未対応です。
 - 文字列とリストは長さだけを追跡し、文字・要素の値は追跡しません。
-- `call`／`callvirt`は上記の文字列・リスト操作、制限付きの`List.map`／`List.filter`、同一staticメソッドへの末尾再帰に対応します。一般のメソッド呼び出し、instance再帰、非末尾再帰、相互再帰、一般のフィールド操作、一般の例外フロー、高階関数は未対応です。
+- `call`／`callvirt`は上記の文字列・リスト操作、制限付きの`List.map`／`List.filter`／`List.sort`、同一staticメソッドへの末尾再帰に対応します。一般のメソッド呼び出し、instance再帰、非末尾再帰、相互再帰、一般のフィールド操作、一般の例外フロー、高階関数は未対応です。
 
 ### 制限付きList.map／List.filter
 
@@ -205,6 +205,8 @@ F#コンパイラが生成した単一のクロージャを渡す`List.map`と`L
 callsite(...,xs_length,remaining) -> map_loop(...,xs_length,xs_length)
 map_loop(...,xs_length,remaining) -> map_loop(...,xs_length,remaining - 1) [remaining > 0]
 ```
+
+`List.sort`も末尾位置で結果を直ちに返す場合に対応します。入力と結果の長さが等しい有限ライブラリ処理として同様の残数ループへ変換します。停止性専用の要約であり、比較回数や`O(n log n)`の計算量は表現しません。`List.sortBy`、`List.sortWith`は未対応です。
 - F#リストではランタイム表現に合わせてnullを空リストとして扱います。文字列ではnullと空文字列を同一視せず、長さだけでは安全に表現できないnull代入や参照値のnull分岐を拒否します。
 - CILの有限幅整数とKoATの数学的整数の意味の差は未解決です。オーバーフローし得るプログラムでは、変換結果が元プログラムの意味を完全には保存しない可能性があります。
 - 一般の符号なし比較は、符号付き整数比較へ誤変換せず拒否します。ただし、C#コンパイラが`x != 0`に使用する特定の`cgt.un`パターンは正規化します。
